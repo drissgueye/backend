@@ -21,6 +21,7 @@ from requetes.models import (
     Dossier,
     DelegueSyndical,
     Entreprise,
+    DocumentSyndical,
     HistoriqueAction,
     Notification,
     PoleMembre,
@@ -43,6 +44,7 @@ from .serializers import (
     AdminUserCreateSerializer,
     DossierSerializer,
     DelegueSyndicalSerializer,
+    DocumentSyndicalSerializer,
     EntrepriseSerializer,
     NotificationSerializer,
     PoleMembreSerializer,
@@ -65,6 +67,12 @@ def _get_role(user: User) -> str | None:
     if isinstance(profil, ProfilUtilisateur):
         return profil.role
     return None
+
+
+def _user_pole_ids(user: User) -> list[int]:
+    return list(
+        Pole.objects.filter(Q(membres=user) | Q(chef_de_pole=user)).values_list("id", flat=True)
+    )
 
 
 def _is_valid_choice(model, field_name: str, value: str) -> bool:
@@ -142,6 +150,13 @@ class PoleViewSet(BaseModelViewSet):
                 {"detail": "Ce membre est déjà associé à ce pôle."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        profil = getattr(member.user, "profil", None)
+        if profil:
+            role_map = {"head": "head", "assistant": "assistant", "member": "member"}
+            new_role = role_map.get(member.role)
+            if new_role and profil.role != new_role:
+                profil.role = new_role
+                profil.save(update_fields=["role"])
         return Response(PoleMembreSerializer(member).data, status=status.HTTP_201_CREATED)
 
 
@@ -150,6 +165,17 @@ class PoleMembreViewSet(BaseModelViewSet):
     serializer_class = PoleMembreSerializer
     permission_classes = [IsAuthenticatedAndHasRole, ReadOnlyUnlessAdminOrPoleManager]
     filterset_fields = ["pole", "user", "role"]
+
+    def perform_update(self, serializer):
+        member = serializer.save()
+        profil = getattr(member.user, "profil", None)
+        if not profil:
+            return
+        role_map = {"head": "head", "assistant": "assistant", "member": "member"}
+        new_role = role_map.get(member.role)
+        if new_role and profil.role != new_role:
+            profil.role = new_role
+            profil.save(update_fields=["role"])
 
 
 class ProfilUtilisateurViewSet(BaseModelViewSet):
@@ -219,6 +245,18 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
                     {"email": "Cet email est déjà utilisé."}
                 )
 
+        role_to_pole_role = {
+            "pole_manager": "head",
+            "head": "head",
+            "assistant": "assistant",
+            "delegate": "assistant",
+            "member": "member",
+            "admin": "head",
+        }
+        pole_role = role_to_pole_role.get(profil.role)
+        if pole_role:
+            PoleMembre.objects.filter(user=user).update(role=pole_role)
+
     def perform_destroy(self, instance):
         user = instance.user
         instance.delete()
@@ -241,12 +279,14 @@ class RequeteViewSet(BaseModelViewSet):
         )
         if role == "admin":
             return qs
-        if role == "pole_manager":
-            return qs.filter(Q(pole__membres=self.request.user) | Q(pole__chef_de_pole=self.request.user))
         if role == "delegate":
-            return qs.filter(delegue_syndical__user=self.request.user)
-        if role == "member":
-            return qs.filter(travailleur=self.request.user)
+            delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
+            if delegue and delegue.entreprise_id:
+                return qs.filter(entreprise_id=delegue.entreprise_id)
+        pole_ids = _user_pole_ids(self.request.user)
+        if pole_ids:
+            return qs.filter(pole_id__in=pole_ids)
+        return qs.filter(travailleur=self.request.user)
         return qs.none()
 
     def perform_create(self, serializer):
@@ -372,13 +412,14 @@ class DossierViewSet(BaseModelViewSet):
         )
         if role == "admin":
             return qs
-        if role == "pole_manager":
-            return qs.filter(Q(pole__membres=self.request.user) | Q(pole__chef_de_pole=self.request.user))
         if role == "delegate":
-            return qs.filter(requetes__delegue_syndical__user=self.request.user).distinct()
-        if role == "member":
-            return qs.filter(requetes__travailleur=self.request.user).distinct()
-        return qs.none()
+            delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
+            if delegue and delegue.entreprise_id:
+                return qs.filter(requetes__entreprise_id=delegue.entreprise_id).distinct()
+        pole_ids = _user_pole_ids(self.request.user)
+        if pole_ids:
+            return qs.filter(pole_id__in=pole_ids)
+        return qs.filter(requetes__travailleur=self.request.user).distinct()
 
     def perform_create(self, serializer):
         with transaction.atomic():
@@ -499,16 +540,14 @@ class PieceJointeViewSet(BaseModelViewSet):
         qs = PieceJointe.objects.select_related("requete", "uploaded_by").all()
         if role == "admin":
             return qs
-        if role == "pole_manager":
-            return qs.filter(
-                Q(requete__pole__membres=self.request.user)
-                | Q(requete__pole__chef_de_pole=self.request.user)
-            )
         if role == "delegate":
-            return qs.filter(requete__delegue_syndical__user=self.request.user)
-        if role == "member":
-            return qs.filter(requete__travailleur=self.request.user)
-        return qs.none()
+            delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
+            if delegue and delegue.entreprise_id:
+                return qs.filter(requete__entreprise_id=delegue.entreprise_id)
+        pole_ids = _user_pole_ids(self.request.user)
+        if pole_ids:
+            return qs.filter(requete__pole_id__in=pole_ids)
+        return qs.filter(requete__travailleur=self.request.user)
 
 
 class ReunionViewSet(BaseModelViewSet):
@@ -523,16 +562,46 @@ class ReunionViewSet(BaseModelViewSet):
         qs = Reunion.objects.select_related("dossier", "created_by").prefetch_related("participants").all()
         if role == "admin":
             return qs
-        if role == "pole_manager":
-            return qs.filter(
-                Q(dossier__pole__membres=self.request.user)
-                | Q(dossier__pole__chef_de_pole=self.request.user)
-            )
         if role == "delegate":
-            return qs.filter(dossier__requetes__delegue_syndical__user=self.request.user).distinct()
-        if role == "member":
-            return qs.filter(dossier__requetes__travailleur=self.request.user).distinct()
+            delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
+            if delegue and delegue.entreprise_id:
+                return qs.filter(dossier__requetes__entreprise_id=delegue.entreprise_id).distinct()
+        pole_ids = _user_pole_ids(self.request.user)
+        if pole_ids:
+            return qs.filter(dossier__pole_id__in=pole_ids)
+        return qs.filter(dossier__requetes__travailleur=self.request.user).distinct()
+
+
+class DocumentSyndicalViewSet(BaseModelViewSet):
+    queryset = DocumentSyndical.objects.select_related("pole", "uploaded_by").all()
+    serializer_class = DocumentSyndicalSerializer
+    permission_classes = [IsAuthenticatedAndHasRole]
+    search_fields = ["nom", "categorie", "description"]
+    ordering_fields = ["annee", "created_at"]
+
+    def get_queryset(self):
+        role = _get_role(self.request.user)
+        qs = DocumentSyndical.objects.select_related("pole", "uploaded_by").all()
+        if role == "admin":
+            return qs
+        if role == "delegate":
+            delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
+            if delegue and delegue.entreprise_id:
+                pole_ids = list(
+                    Pole.objects.filter(requetes__entreprise_id=delegue.entreprise_id)
+                    .values_list("id", flat=True)
+                    .distinct()
+                )
+                if pole_ids:
+                    return qs.filter(pole_id__in=pole_ids)
+                return qs.none()
+        pole_ids = _user_pole_ids(self.request.user)
+        if pole_ids:
+            return qs.filter(pole_id__in=pole_ids)
         return qs.none()
+
+    def perform_create(self, serializer):
+        serializer.save(uploaded_by=self.request.user)
 
 
 class NotificationViewSet(BaseModelViewSet):

@@ -16,6 +16,8 @@ User = get_user_model()
 class RoleUtilisateur(models.TextChoices):
     ADMIN = "admin", "Administrateur"
     POLE_MANAGER = "pole_manager", "Chef de pôle"
+    HEAD = "head", "Chef de pôle (membre)"
+    ASSISTANT = "assistant", "Assistant de pôle"
     DELEGATE = "delegate", "Délégué"
     MEMBER = "member", "Membre"
 

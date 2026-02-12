@@ -10,6 +10,7 @@ from requetes.models import (
     DelegueSyndical,
     Dossier,
     Entreprise,
+    DocumentSyndical,
     Notification,
     PoleMembre,
     PieceJointe,
@@ -448,6 +449,33 @@ class DelegueSyndicalSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "user", "entreprise"]
 
 
+class DocumentSyndicalSerializer(serializers.ModelSerializer):
+    """Serializer Document syndical."""
+
+    pole = PoleSerializer(read_only=True)
+    pole_id = serializers.PrimaryKeyRelatedField(
+        source="pole", queryset=Pole.objects.all(), required=False, allow_null=True, write_only=True
+    )
+
+    class Meta:
+        model = DocumentSyndical
+        fields = [
+            "id",
+            "nom",
+            "description",
+            "pole",
+            "pole_id",
+            "annee",
+            "categorie",
+            "fichier",
+            "version",
+            "uploaded_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "uploaded_by", "pole"]
+
+
 class RegisterSerializer(serializers.Serializer):
     """Serializer pour l'inscription utilisateur."""
 
@@ -501,7 +529,9 @@ class AdminUserCreateSerializer(serializers.Serializer):
     entreprise_id = serializers.PrimaryKeyRelatedField(
         source="entreprise", queryset=Entreprise.objects.all(), required=False, allow_null=True
     )
-    role = serializers.ChoiceField(choices=["admin", "pole_manager", "delegate", "member"])
+    role = serializers.ChoiceField(
+        choices=["admin", "pole_manager", "head", "assistant", "delegate", "member"]
+    )
     password = serializers.CharField(write_only=True, min_length=8)
     is_active = serializers.BooleanField(required=False, default=True)
 

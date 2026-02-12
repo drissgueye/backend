@@ -36,7 +36,7 @@ class RequeteAccessPermission(BasePermission):
             return False
         if role == "admin":
             return True
-        if role == "pole_manager":
+        if role in ["pole_manager", "head", "assistant"]:
             return obj.pole.membres.filter(id=request.user.id).exists() or obj.pole.chef_de_pole_id == request.user.id
         if role == "delegate":
             return obj.delegue_syndical and obj.delegue_syndical.user_id == request.user.id
@@ -54,7 +54,7 @@ class DossierAccessPermission(BasePermission):
             return False
         if role == "admin":
             return True
-        if role == "pole_manager":
+        if role in ["pole_manager", "head", "assistant"]:
             return obj.pole.membres.filter(id=request.user.id).exists() or obj.pole.chef_de_pole_id == request.user.id
         if role == "delegate":
             return obj.requetes.filter(delegue_syndical__user_id=request.user.id).exists()

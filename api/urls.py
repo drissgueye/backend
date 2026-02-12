@@ -7,6 +7,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     DelegueSyndicalViewSet,
     DossierViewSet,
+    DocumentSyndicalViewSet,
     EntrepriseViewSet,
     LogoutViewSet,
     NotificationViewSet,
@@ -26,6 +27,7 @@ router.register("delegues", DelegueSyndicalViewSet, basename="delegue")
 router.register("poles", PoleViewSet, basename="pole")
 router.register("pole-members", PoleMembreViewSet, basename="pole-member")
 router.register("profils", ProfilUtilisateurViewSet, basename="profil")
+router.register("documents", DocumentSyndicalViewSet, basename="document")
 router.register("requetes", RequeteViewSet, basename="requete")
 router.register("dossiers", DossierViewSet, basename="dossier")
 router.register("pieces-jointes", PieceJointeViewSet, basename="piece-jointe")

@@ -1,0 +1,785 @@
+[
+  {
+    "model": "auth.user",
+    "pk": 1,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": true,
+      "username": "admin",
+      "first_name": "Admin",
+      "last_name": "Syndicat",
+      "email": "admin@syndicat.local",
+      "is_staff": true,
+      "is_active": true,
+      "date_joined": "2026-02-01T08:00:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 2,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "chef_pole",
+      "first_name": "Awa",
+      "last_name": "Souane",
+      "email": "awa@syndicat.local",
+      "is_staff": true,
+      "is_active": true,
+      "date_joined": "2026-02-02T09:00:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 3,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "assistant_pole",
+      "first_name": "Alpha",
+      "last_name": "Diallo",
+      "email": "alpha@syndicat.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-02-03T10:30:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 4,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "membre1",
+      "first_name": "Mathurin",
+      "last_name": "Ndoye",
+      "email": "mathurin@syndicat.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-02-04T11:15:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 5,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "delegue",
+      "first_name": "Fatou",
+      "last_name": "Ba",
+      "email": "fatou@syndicat.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-02-05T12:00:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 6,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "membre2",
+      "first_name": "Aminata",
+      "last_name": "Fall",
+      "email": "aminata@syndicat.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-02-06T12:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.entreprise",
+    "pk": 1,
+    "fields": {
+      "nom": "Axa Assurance",
+      "code": "AXA",
+      "adresse": "Dakar, Sénégal",
+      "secteur_activite": "Assurance"
+    }
+  },
+  {
+    "model": "requetes.entreprise",
+    "pk": 2,
+    "fields": {
+      "nom": "Sunu Assurances Sénégal",
+      "code": "SUNU",
+      "adresse": "Dakar, Sénégal",
+      "secteur_activite": "Assurance"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 1,
+    "fields": {
+      "user": 1,
+      "role": "admin",
+      "nom": "Admin",
+      "prenom": "Syndicat",
+      "telephone": "+221700000001",
+      "email": "admin@syndicat.local",
+      "entreprise": null,
+      "photo": "profils/default.png",
+      "premiere_adhesion": true,
+      "ancien_syndicat": false,
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2026-02-01",
+      "created_at": "2026-02-01T08:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 2,
+    "fields": {
+      "user": 2,
+      "role": "head",
+      "nom": "Souane",
+      "prenom": "Awa",
+      "telephone": "+221700000002",
+      "email": "awa@syndicat.local",
+      "entreprise": 1,
+      "poste": "Responsable pôle",
+      "departement": "RH",
+      "type_contrat": "cdi",
+      "date_embauche": "2020-03-01",
+      "matricule_interne": "AXA-001",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-AXA-0001",
+      "photo": "profils/default.png",
+      "premiere_adhesion": false,
+      "ancien_syndicat": true,
+      "nom_ancien_syndicat": "Syndicat A",
+      "motivation_adhesion": "Améliorer les conditions de travail.",
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2024-05-10",
+      "created_at": "2026-02-02T09:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 3,
+    "fields": {
+      "user": 3,
+      "role": "assistant",
+      "nom": "Diallo",
+      "prenom": "Alpha",
+      "telephone": "+221700000003",
+      "email": "alpha@syndicat.local",
+      "entreprise": 1,
+      "poste": "Assistant pôle",
+      "departement": "Support",
+      "type_contrat": "cdd",
+      "date_embauche": "2022-06-15",
+      "matricule_interne": "AXA-002",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-AXA-0002",
+      "photo": "profils/default.png",
+      "premiere_adhesion": true,
+      "ancien_syndicat": false,
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2026-02-03",
+      "created_at": "2026-02-03T10:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 4,
+    "fields": {
+      "user": 4,
+      "role": "member",
+      "nom": "Ndoye",
+      "prenom": "Mathurin",
+      "telephone": "+221700000004",
+      "email": "mathurin@syndicat.local",
+      "entreprise": 1,
+      "poste": "Gestionnaire",
+      "departement": "Sinistres",
+      "type_contrat": "cdi",
+      "date_embauche": "2019-01-20",
+      "matricule_interne": "AXA-100",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-AXA-0100",
+      "photo": "profils/default.png",
+      "premiere_adhesion": true,
+      "ancien_syndicat": false,
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2026-02-04",
+      "created_at": "2026-02-04T11:15:00Z"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 5,
+    "fields": {
+      "user": 5,
+      "role": "delegate",
+      "nom": "Ba",
+      "prenom": "Fatou",
+      "telephone": "+221700000005",
+      "email": "fatou@syndicat.local",
+      "entreprise": 1,
+      "poste": "Délégué",
+      "departement": "Commercial",
+      "type_contrat": "cdi",
+      "date_embauche": "2018-09-01",
+      "matricule_interne": "AXA-200",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-AXA-0200",
+      "photo": "profils/default.png",
+      "premiere_adhesion": false,
+      "ancien_syndicat": true,
+      "nom_ancien_syndicat": "Syndicat B",
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2021-08-15",
+      "created_at": "2026-02-05T12:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 6,
+    "fields": {
+      "user": 6,
+      "role": "member",
+      "nom": "Fall",
+      "prenom": "Aminata",
+      "telephone": "+221700000006",
+      "email": "aminata@syndicat.local",
+      "entreprise": 2,
+      "poste": "Chargée de clientèle",
+      "departement": "Service client",
+      "type_contrat": "cdd",
+      "date_embauche": "2023-02-10",
+      "matricule_interne": "SUNU-001",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-SUNU-0001",
+      "photo": "profils/default.png",
+      "premiere_adhesion": true,
+      "ancien_syndicat": false,
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2026-02-06",
+      "created_at": "2026-02-06T12:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.pole",
+    "pk": 1,
+    "fields": {
+      "nom": "Pôle Conditions de Travail et Rémunération",
+      "description": "Amélioration des conditions de travail, rémunération et environnement.",
+      "chef_de_pole": 2,
+      "types_problemes": [
+        "working_conditions_remuneration",
+        "sport_wellbeing"
+      ]
+    }
+  },
+  {
+    "model": "requetes.pole",
+    "pk": 2,
+    "fields": {
+      "nom": "Pôle Dialogue Social et Médiation",
+      "description": "Gestion des conflits sociaux et médiations.",
+      "chef_de_pole": 2,
+      "types_problemes": [
+        "social_mediation"
+      ]
+    }
+  },
+  {
+    "model": "requetes.polemembre",
+    "pk": 1,
+    "fields": {
+      "pole": 1,
+      "user": 2,
+      "role": "head",
+      "created_at": "2026-02-02T09:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.polemembre",
+    "pk": 2,
+    "fields": {
+      "pole": 1,
+      "user": 3,
+      "role": "assistant",
+      "created_at": "2026-02-03T10:45:00Z"
+    }
+  },
+  {
+    "model": "requetes.polemembre",
+    "pk": 3,
+    "fields": {
+      "pole": 1,
+      "user": 4,
+      "role": "member",
+      "created_at": "2026-02-04T11:20:00Z"
+    }
+  },
+  {
+    "model": "requetes.deleguesyndical",
+    "pk": 1,
+    "fields": {
+      "user": 5,
+      "entreprise": 1,
+      "telephone": "+221700000005",
+      "email": "fatou@syndicat.local",
+      "is_active": true,
+      "created_at": "2026-02-05T12:10:00Z"
+    }
+  },
+  {
+    "model": "requetes.dossier",
+    "pk": 1,
+    "fields": {
+      "pole": 1,
+      "numero_dossier": "DOS-2026-00001",
+      "titre": "Dossier rémunération 2026",
+      "responsable": 2,
+      "statut": "EN_INSTRUCTION",
+      "date_ouverture": "2026-02-08",
+      "date_cloture": null,
+      "synthese": "Analyse des demandes liées à la rémunération.",
+      "created_at": "2026-02-08T09:00:00Z",
+      "updated_at": "2026-02-10T10:00:00Z",
+      "requetes": [1, 2]
+    }
+  },
+  {
+    "model": "requetes.requete",
+    "pk": 1,
+    "fields": {
+      "travailleur": 4,
+      "pole": 1,
+      "type_probleme": "working_conditions_remuneration",
+      "titre": "Revalorisation salariale",
+      "description": "Demande de révision de la grille salariale.",
+      "delegue_syndical": 1,
+      "entreprise": 1,
+      "dossier": 1,
+      "statut": "processing",
+      "priorite": "high",
+      "created_at": "2026-02-07T08:30:00Z",
+      "updated_at": "2026-02-10T10:30:00Z",
+      "numero_reference": "REQ-2026-00001"
+    }
+  },
+  {
+    "model": "requetes.requete",
+    "pk": 2,
+    "fields": {
+      "travailleur": 6,
+      "pole": 1,
+      "type_probleme": "working_conditions_remuneration",
+      "titre": "Amélioration des conditions de travail",
+      "description": "Besoin d'équipements adaptés et ergonomiques.",
+      "delegue_syndical": null,
+      "entreprise": 2,
+      "dossier": null,
+      "statut": "new",
+      "priorite": "medium",
+      "created_at": "2026-02-09T14:00:00Z",
+      "updated_at": "2026-02-09T14:00:00Z",
+      "numero_reference": "REQ-2026-00002"
+    }
+  },
+  {
+    "model": "requetes.piecejointe",
+    "pk": 1,
+    "fields": {
+      "requete": 1,
+      "fichier": "testfiles/contrat_requete_1.pdf",
+      "type_document": "CONTRAT",
+      "description": "Contrat de travail actuel.",
+      "uploaded_by": 4,
+      "uploaded_at": "2026-02-07T09:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.reunion",
+    "pk": 1,
+    "fields": {
+      "dossier": 1,
+      "type_reunion": "PRESENTIEL",
+      "date_heure": "2026-02-15T10:00:00Z",
+      "lieu": "Siège syndical",
+      "participants": [2, 4, 5],
+      "ordre_du_jour": "Analyse des demandes et plan d'action.",
+      "compte_rendu": null,
+      "statut": "PLANIFIEE",
+      "created_by": 2,
+      "created_at": "2026-02-10T11:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.requetemessage",
+    "pk": 1,
+    "fields": {
+      "requete": 1,
+      "utilisateur": 4,
+      "contenu": "Merci de prendre en compte notre demande.",
+      "is_interne": false,
+      "created_at": "2026-02-07T09:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.interactionrh",
+    "pk": 1,
+    "fields": {
+      "requete": 1,
+      "utilisateur": 2,
+      "contact_nom": "M. Ndiaye",
+      "contact_role": "DRH",
+      "notes": "Premier échange sur la faisabilité.",
+      "created_at": "2026-02-08T10:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.communicationpost",
+    "pk": 1,
+    "fields": {
+      "titre": "Information sur les revendications 2026",
+      "contenu": "Point d'étape sur les actions en cours.",
+      "visibilite": "pole",
+      "entreprise_cible": null,
+      "pole_cible": 1,
+      "auteur": 2,
+      "created_at": "2026-02-09T12:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.communicationpiecejointe",
+    "pk": 1,
+    "fields": {
+      "communication": 1,
+      "fichier": "testfiles/communication_2026.pdf",
+      "description": "Note interne.",
+      "uploaded_by": 2,
+      "uploaded_at": "2026-02-09T12:10:00Z"
+    }
+  },
+  {
+    "model": "requetes.documentsyndical",
+    "pk": 1,
+    "fields": {
+      "nom": "Règlement intérieur 2026",
+      "description": "Version actualisée du règlement.",
+      "pole": 1,
+      "annee": 2026,
+      "categorie": "Règlement",
+      "fichier": "testfiles/reglement_interieur_2026.pdf",
+      "version": 1,
+      "uploaded_by": 2,
+      "created_at": "2026-02-08T09:15:00Z",
+      "updated_at": "2026-02-08T09:15:00Z"
+    }
+  },
+  {
+    "model": "requetes.templatedocument",
+    "pk": 1,
+    "fields": {
+      "nom": "Modèle PV réunion",
+      "type_template": "pv",
+      "contenu": "Procès-verbal standard pour les réunions de pôle.",
+      "pole": 1,
+      "is_global": false,
+      "version": 1,
+      "is_active": true,
+      "created_at": "2026-02-08T10:00:00Z",
+      "updated_at": "2026-02-08T10:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.notification",
+    "pk": 1,
+    "fields": {
+      "utilisateur": 4,
+      "titre": "Requête mise à jour",
+      "message": "Votre requête REQ-2026-00001 est en traitement.",
+      "type_notification": "ticket_update",
+      "requete": 1,
+      "is_read": false,
+      "created_at": "2026-02-10T10:30:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 7,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "delegue2",
+      "first_name": "Moussa",
+      "last_name": "Camara",
+      "email": "moussa@syndicat.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-02-07T08:00:00Z"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 8,
+    "fields": {
+      "password": "pbkdf2_sha256$1200000$oridcLX6b3Q5tgpw0vrQYf$N+GOx0IB5cK/u+Q7IdMMw4tNX8ww2V7kkjOwI1LEzdE=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "membre3",
+      "first_name": "Khadija",
+      "last_name": "Diop",
+      "email": "khadija@syndicat.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-02-07T09:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.entreprise",
+    "pk": 3,
+    "fields": {
+      "nom": "SanlamAllianz Sénégal Assurances",
+      "code": "SANLAM",
+      "adresse": "Dakar, Sénégal",
+      "secteur_activite": "Assurance"
+    }
+  },
+  {
+    "model": "requetes.entreprise",
+    "pk": 4,
+    "fields": {
+      "nom": "Amsa assurances",
+      "code": "AMSA",
+      "adresse": "Dakar, Sénégal",
+      "secteur_activite": "Assurance"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 7,
+    "fields": {
+      "user": 7,
+      "role": "delegate",
+      "nom": "Camara",
+      "prenom": "Moussa",
+      "telephone": "+221700000007",
+      "email": "moussa@syndicat.local",
+      "entreprise": 2,
+      "poste": "Délégué",
+      "departement": "Support",
+      "type_contrat": "cdi",
+      "date_embauche": "2017-04-12",
+      "matricule_interne": "SUNU-100",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-SUNU-0100",
+      "photo": "profils/default.png",
+      "premiere_adhesion": false,
+      "ancien_syndicat": false,
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2020-04-12",
+      "created_at": "2026-02-07T08:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.profilutilisateur",
+    "pk": 8,
+    "fields": {
+      "user": 8,
+      "role": "member",
+      "nom": "Diop",
+      "prenom": "Khadija",
+      "telephone": "+221700000008",
+      "email": "khadija@syndicat.local",
+      "entreprise": 2,
+      "poste": "Gestionnaire",
+      "departement": "Back-office",
+      "type_contrat": "cdd",
+      "date_embauche": "2021-06-01",
+      "matricule_interne": "SUNU-101",
+      "lieu_travail": "Dakar",
+      "numero_piece_identite": "CNI-SUNU-0101",
+      "photo": "profils/default.png",
+      "premiere_adhesion": true,
+      "ancien_syndicat": false,
+      "engagement_statuts": true,
+      "consentement_donnees": true,
+      "date_adhesion": "2021-06-01",
+      "created_at": "2026-02-07T09:30:00Z"
+    }
+  },
+  {
+    "model": "requetes.pole",
+    "pk": 3,
+    "fields": {
+      "nom": "Pôle Formation et Carrière",
+      "description": "Formations continues et évolution de carrière.",
+      "chef_de_pole": 2,
+      "types_problemes": [
+        "training_career"
+      ]
+    }
+  },
+  {
+    "model": "requetes.pole",
+    "pk": 4,
+    "fields": {
+      "nom": "Pôle Santé, Sécurité et Bien-être au travail",
+      "description": "Santé, prévention et bien-être au travail.",
+      "chef_de_pole": 2,
+      "types_problemes": [
+        "health_safety_wellbeing"
+      ]
+    }
+  },
+  {
+    "model": "requetes.polemembre",
+    "pk": 4,
+    "fields": {
+      "pole": 3,
+      "user": 2,
+      "role": "head",
+      "created_at": "2026-02-07T10:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.polemembre",
+    "pk": 5,
+    "fields": {
+      "pole": 3,
+      "user": 7,
+      "role": "assistant",
+      "created_at": "2026-02-07T10:10:00Z"
+    }
+  },
+  {
+    "model": "requetes.polemembre",
+    "pk": 6,
+    "fields": {
+      "pole": 3,
+      "user": 8,
+      "role": "member",
+      "created_at": "2026-02-07T10:20:00Z"
+    }
+  },
+  {
+    "model": "requetes.deleguesyndical",
+    "pk": 2,
+    "fields": {
+      "user": 7,
+      "entreprise": 2,
+      "telephone": "+221700000007",
+      "email": "moussa@syndicat.local",
+      "is_active": true,
+      "created_at": "2026-02-07T11:00:00Z"
+    }
+  },
+  {
+    "model": "requetes.dossier",
+    "pk": 2,
+    "fields": {
+      "pole": 3,
+      "numero_dossier": "DOS-2026-00002",
+      "titre": "Dossier formation 2026",
+      "responsable": 2,
+      "statut": "OUVERT",
+      "date_ouverture": "2026-02-11",
+      "date_cloture": null,
+      "synthese": "Plan de formation continue pour les membres.",
+      "created_at": "2026-02-11T09:00:00Z",
+      "updated_at": "2026-02-11T09:00:00Z",
+      "requetes": [3]
+    }
+  },
+  {
+    "model": "requetes.requete",
+    "pk": 3,
+    "fields": {
+      "travailleur": 8,
+      "pole": 3,
+      "type_probleme": "training_career",
+      "titre": "Formation CIMA",
+      "description": "Demande d'accès à une certification CIMA.",
+      "delegue_syndical": 2,
+      "entreprise": 2,
+      "dossier": 2,
+      "statut": "new",
+      "priorite": "medium",
+      "created_at": "2026-02-10T08:45:00Z",
+      "updated_at": "2026-02-10T08:45:00Z",
+      "numero_reference": "REQ-2026-00003"
+    }
+  },
+  {
+    "model": "requetes.requete",
+    "pk": 4,
+    "fields": {
+      "travailleur": 4,
+      "pole": 4,
+      "type_probleme": "health_safety_wellbeing",
+      "titre": "Amélioration de la sécurité",
+      "description": "Besoin d'équipements de protection adaptés.",
+      "delegue_syndical": 1,
+      "entreprise": 1,
+      "dossier": null,
+      "statut": "info_needed",
+      "priorite": "high",
+      "created_at": "2026-02-10T12:30:00Z",
+      "updated_at": "2026-02-11T07:50:00Z",
+      "numero_reference": "REQ-2026-00004"
+    }
+  },
+  {
+    "model": "requetes.piecejointe",
+    "pk": 2,
+    "fields": {
+      "requete": 3,
+      "fichier": "testfiles/attestation_formation.pdf",
+      "type_document": "ATTESTATION",
+      "description": "Attestation de besoin de formation.",
+      "uploaded_by": 8,
+      "uploaded_at": "2026-02-10T09:10:00Z"
+    }
+  },
+  {
+    "model": "requetes.documentsyndical",
+    "pk": 2,
+    "fields": {
+      "nom": "Guide des formations 2026",
+      "description": "Catalogue des formations disponibles.",
+      "pole": 3,
+      "annee": 2026,
+      "categorie": "Formation",
+      "fichier": "testfiles/guide_formations_2026.pdf",
+      "version": 1,
+      "uploaded_by": 2,
+      "created_at": "2026-02-11T09:20:00Z",
+      "updated_at": "2026-02-11T09:20:00Z"
+    }
+  },
+  {
+    "model": "requetes.notification",
+    "pk": 2,
+    "fields": {
+      "utilisateur": 8,
+      "titre": "Requête créée",
+      "message": "Votre requête REQ-2026-00003 a bien été enregistrée.",
+      "type_notification": "general",
+      "requete": 3,
+      "is_read": false,
+      "created_at": "2026-02-10T08:50:00Z"
+    }
+  }
+]
