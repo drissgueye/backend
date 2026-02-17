@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.db import IntegrityError
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -132,6 +133,16 @@ class ProfilUtilisateurSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "user"]
 
+    def to_representation(self, instance: ProfilUtilisateur) -> dict:
+        """Expose le rôle effectif (admin si is_staff/is_superuser) pour le frontend."""
+        from api.permissions import _get_role
+
+        data = super().to_representation(instance)
+        effective_role = _get_role(instance.user)
+        if effective_role is not None:
+            data["role"] = effective_role
+        return data
+
     def validate_email(self, value: str) -> str:
         if not value:
             return value
@@ -145,10 +156,28 @@ class ProfilUtilisateurSerializer(serializers.ModelSerializer):
     def update(self, instance: ProfilUtilisateur, validated_data: dict[str, Any]) -> ProfilUtilisateur:
         user_data = validated_data.pop("user", {})
         is_active = user_data.get("is_active")
+        profil = super().update(instance, validated_data)
+        user = profil.user
+        updated = False
+        if profil.prenom is not None:
+            user.first_name = profil.prenom
+            updated = True
+        if profil.nom is not None:
+            user.last_name = profil.nom
+            updated = True
+        if profil.email:
+            user.email = profil.email
+            user.username = profil.email
+            updated = True
         if is_active is not None:
-            instance.user.is_active = is_active
-            instance.user.save(update_fields=["is_active"])
-        return super().update(instance, validated_data)
+            user.is_active = is_active
+            updated = True
+        if updated:
+            try:
+                user.save(update_fields=["first_name", "last_name", "email", "username", "is_active"])
+            except IntegrityError:
+                raise serializers.ValidationError({"email": "Cet email est déjà utilisé."})
+        return profil
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         ancien_syndicat = attrs.get(
@@ -284,6 +313,32 @@ class RequeteSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "numero_reference", "created_at", "updated_at"]
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        from api.permissions import _get_role
+
+        request = self.context.get("request")
+        if request and "travailleur" in attrs:
+            role = _get_role(request.user)
+            if role not in ("admin", "delegate") and attrs["travailleur"] != request.user:
+                raise serializers.ValidationError(
+                    {"travailleur_id": "Vous ne pouvez créer une requête que pour vous-même."}
+                )
+            if role == "delegate":
+                mandat = DelegueSyndical.objects.filter(user=request.user).first()
+                if not mandat or not mandat.entreprise_id:
+                    raise serializers.ValidationError(
+                        {"travailleur_id": "Vous n'êtes pas délégué d'une entreprise."}
+                    )
+                travailleur = attrs["travailleur"]
+                profil_travailleur = getattr(travailleur, "profil", None)
+                if not profil_travailleur or getattr(profil_travailleur, "entreprise_id", None) != mandat.entreprise_id:
+                    raise serializers.ValidationError(
+                        {"travailleur_id": "Vous ne pouvez envoyer une requête que pour des personnes de votre entreprise."}
+                    )
+                entreprise_req = attrs.get("entreprise")
+                if entreprise_req and entreprise_req.id != mandat.entreprise_id:
+                    raise serializers.ValidationError(
+                        {"entreprise_id": "Vous ne pouvez créer une requête que pour votre entreprise."}
+                    )
         entreprise = attrs.get("entreprise") or getattr(self.instance, "entreprise", None)
         delegue = attrs.get("delegue_syndical") or getattr(self.instance, "delegue_syndical", None)
         if delegue and entreprise and delegue.entreprise_id != entreprise.id:

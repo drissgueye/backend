@@ -36,6 +36,7 @@ from .filters import DossierFilter, NotificationFilter, PieceJointeFilter, Reque
 from .permissions import (
     DossierAccessPermission,
     IsAuthenticatedAndHasRole,
+    PoleMembreAccessPermission,
     ReadOnlyUnlessAdmin,
     ReadOnlyUnlessAdminOrPoleManager,
     RequeteAccessPermission,
@@ -141,6 +142,13 @@ class PoleViewSet(BaseModelViewSet):
             qs = PoleMembre.objects.select_related("user").filter(pole=pole)
             return Response(PoleMembreSerializer(qs, many=True).data, status=status.HTTP_200_OK)
 
+        role = _get_role(request.user)
+        if role != "admin" and pole.chef_de_pole_id != request.user.id:
+            return Response(
+                {"detail": "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         serializer = PoleMembreSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -163,8 +171,23 @@ class PoleViewSet(BaseModelViewSet):
 class PoleMembreViewSet(BaseModelViewSet):
     queryset = PoleMembre.objects.select_related("pole", "user").all()
     serializer_class = PoleMembreSerializer
-    permission_classes = [IsAuthenticatedAndHasRole, ReadOnlyUnlessAdminOrPoleManager]
+    permission_classes = [IsAuthenticatedAndHasRole, ReadOnlyUnlessAdminOrPoleManager, PoleMembreAccessPermission]
     filterset_fields = ["pole", "user", "role"]
+
+    def perform_create(self, serializer):
+        pole = serializer.validated_data.get("pole")
+        if not pole and self.request.data:
+            pole_id = self.request.data.get("pole") or self.request.data.get("pole_id")
+            if pole_id:
+                pole = Pole.objects.filter(pk=pole_id).first()
+        if pole:
+            role = _get_role(self.request.user)
+            if role != "admin" and pole.chef_de_pole_id != self.request.user.id:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(
+                    "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."
+                )
+        serializer.save()
 
     def perform_update(self, serializer):
         member = serializer.save()
@@ -186,6 +209,15 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
     search_fields = ["user__username", "user__email"]
     ordering_fields = ["created_at"]
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        role = _get_role(self.request.user)
+        if role == "delegate":
+            delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
+            if delegue and delegue.entreprise_id:
+                return qs.filter(entreprise_id=delegue.entreprise_id)
+        return qs
+
     def get_permissions(self):
         if getattr(self, "action", None) == "me":
             return [IsAuthenticated()]
@@ -203,6 +235,23 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
         serializer = self.get_serializer(profil)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="set-password")
+    def set_password(self, request, pk=None):
+        """Permet à l'admin de changer le mot de passe d'un utilisateur."""
+        if _get_role(request.user) != "admin":
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        profil = self.get_object()
+        new_password = request.data.get("new_password")
+        if not new_password or not isinstance(new_password, str) or len(new_password.strip()) < 1:
+            return Response(
+                {"new_password": "Un mot de passe non vide est requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = profil.user
+        user.set_password(new_password.strip())
+        user.save(update_fields=["password"])
+        return Response(status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="create-user")
     def create_user(self, request):
@@ -222,29 +271,6 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
     def perform_update(self, serializer):
         profil = serializer.save()
         user = profil.user
-        updated = False
-        if profil.prenom is not None:
-            user.first_name = profil.prenom
-            updated = True
-        if profil.nom is not None:
-            user.last_name = profil.nom
-            updated = True
-        if profil.email:
-            user.email = profil.email
-            user.username = profil.email
-            updated = True
-        is_active = serializer.validated_data.get("user", {}).get("is_active")
-        if is_active is not None:
-            user.is_active = is_active
-            updated = True
-        if updated:
-            try:
-                user.save()
-            except IntegrityError:
-                raise serializers.ValidationError(
-                    {"email": "Cet email est déjà utilisé."}
-                )
-
         role_to_pole_role = {
             "pole_manager": "head",
             "head": "head",
@@ -282,12 +308,14 @@ class RequeteViewSet(BaseModelViewSet):
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
             if delegue and delegue.entreprise_id:
-                return qs.filter(entreprise_id=delegue.entreprise_id)
+                return qs.filter(travailleur__profil__entreprise_id=delegue.entreprise_id)
+            return qs.none()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
-            return qs.filter(pole_id__in=pole_ids)
+            return qs.filter(
+                Q(pole_id__in=pole_ids) | Q(travailleur=self.request.user)
+            )
         return qs.filter(travailleur=self.request.user)
-        return qs.none()
 
     def perform_create(self, serializer):
         with transaction.atomic():
@@ -415,10 +443,13 @@ class DossierViewSet(BaseModelViewSet):
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
             if delegue and delegue.entreprise_id:
-                return qs.filter(requetes__entreprise_id=delegue.entreprise_id).distinct()
+                return qs.filter(requetes__travailleur__profil__entreprise_id=delegue.entreprise_id).distinct()
+            return qs.none()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
-            return qs.filter(pole_id__in=pole_ids)
+            return qs.filter(
+                Q(pole_id__in=pole_ids) | Q(requetes__travailleur=self.request.user)
+            ).distinct()
         return qs.filter(requetes__travailleur=self.request.user).distinct()
 
     def perform_create(self, serializer):
@@ -543,10 +574,13 @@ class PieceJointeViewSet(BaseModelViewSet):
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
             if delegue and delegue.entreprise_id:
-                return qs.filter(requete__entreprise_id=delegue.entreprise_id)
+                return qs.filter(requete__travailleur__profil__entreprise_id=delegue.entreprise_id)
+            return qs.none()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
-            return qs.filter(requete__pole_id__in=pole_ids)
+            return qs.filter(
+                Q(requete__pole_id__in=pole_ids) | Q(requete__travailleur=self.request.user)
+            )
         return qs.filter(requete__travailleur=self.request.user)
 
 
@@ -565,10 +599,14 @@ class ReunionViewSet(BaseModelViewSet):
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
             if delegue and delegue.entreprise_id:
-                return qs.filter(dossier__requetes__entreprise_id=delegue.entreprise_id).distinct()
+                return qs.filter(dossier__requetes__travailleur__profil__entreprise_id=delegue.entreprise_id).distinct()
+            return qs.none()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
-            return qs.filter(dossier__pole_id__in=pole_ids)
+            return qs.filter(
+                Q(dossier__pole_id__in=pole_ids)
+                | Q(dossier__requetes__travailleur=self.request.user)
+            ).distinct()
         return qs.filter(dossier__requetes__travailleur=self.request.user).distinct()
 
 
@@ -586,15 +624,16 @@ class DocumentSyndicalViewSet(BaseModelViewSet):
             return qs
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
-            if delegue and delegue.entreprise_id:
-                pole_ids = list(
-                    Pole.objects.filter(requetes__entreprise_id=delegue.entreprise_id)
-                    .values_list("id", flat=True)
-                    .distinct()
-                )
-                if pole_ids:
-                    return qs.filter(pole_id__in=pole_ids)
+            if not delegue or not delegue.entreprise_id:
                 return qs.none()
+            pole_ids = list(
+                Pole.objects.filter(requetes__travailleur__profil__entreprise_id=delegue.entreprise_id)
+                .values_list("id", flat=True)
+                .distinct()
+            )
+            if pole_ids:
+                return qs.filter(pole_id__in=pole_ids)
+            return qs.none()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
             return qs.filter(pole_id__in=pole_ids)

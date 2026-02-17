@@ -5,7 +5,7 @@ from typing import Any
 from django.contrib.auth.models import AnonymousUser
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
-from requetes.models import ProfilUtilisateur, Requete, Dossier
+from requetes.models import DelegueSyndical, PoleMembre, ProfilUtilisateur, Requete, Dossier
 
 
 def _get_role(user: Any) -> str | None:
@@ -39,9 +39,18 @@ class RequeteAccessPermission(BasePermission):
         if role in ["pole_manager", "head", "assistant"]:
             return obj.pole.membres.filter(id=request.user.id).exists() or obj.pole.chef_de_pole_id == request.user.id
         if role == "delegate":
-            return obj.delegue_syndical and obj.delegue_syndical.user_id == request.user.id
+            if obj.delegue_syndical and obj.delegue_syndical.user_id == request.user.id:
+                return True
+            mandat = DelegueSyndical.objects.filter(user=request.user).first()
+            if mandat and mandat.entreprise_id:
+                profil_travailleur = getattr(obj.travailleur, "profil", None)
+                if profil_travailleur and getattr(profil_travailleur, "entreprise_id", None) == mandat.entreprise_id:
+                    return True
+            return False
         if role == "member":
-            return obj.travailleur_id == request.user.id
+            if obj.travailleur_id == request.user.id:
+                return True
+            return obj.pole.membres.filter(id=request.user.id).exists()
         return False
 
 
@@ -57,9 +66,17 @@ class DossierAccessPermission(BasePermission):
         if role in ["pole_manager", "head", "assistant"]:
             return obj.pole.membres.filter(id=request.user.id).exists() or obj.pole.chef_de_pole_id == request.user.id
         if role == "delegate":
-            return obj.requetes.filter(delegue_syndical__user_id=request.user.id).exists()
+            if obj.requetes.filter(delegue_syndical__user_id=request.user.id).exists():
+                return True
+            mandat = DelegueSyndical.objects.filter(user=request.user).first()
+            if mandat and mandat.entreprise_id:
+                if obj.requetes.filter(travailleur__profil__entreprise_id=mandat.entreprise_id).exists():
+                    return True
+            return False
         if role == "member":
-            return obj.requetes.filter(travailleur_id=request.user.id).exists()
+            if obj.requetes.filter(travailleur_id=request.user.id).exists():
+                return True
+            return obj.pole.membres.filter(id=request.user.id).exists()
         return False
 
 
@@ -85,3 +102,15 @@ class ReadOnlyUnlessAdminOrPoleManager(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return role in ["admin", "pole_manager"]
+
+
+class PoleMembreAccessPermission(BasePermission):
+    """Ajout/suppression de membres : admin ou responsable du pôle (chef_de_pole) uniquement."""
+
+    def has_object_permission(self, request, view, obj: PoleMembre) -> bool:
+        if request.method in SAFE_METHODS:
+            return True
+        role = _get_role(request.user)
+        if role == "admin":
+            return True
+        return obj.pole.chef_de_pole_id == request.user.id
