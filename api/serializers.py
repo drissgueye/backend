@@ -13,9 +13,10 @@ from requetes.models import (
     Entreprise,
     DocumentSyndical,
     Notification,
-    PoleMembre,
-    PieceJointe,
     Pole,
+    PoleMembre,
+    PoleMembership,
+    PieceJointe,
     ProfilUtilisateur,
     Requete,
     Reunion,
@@ -42,8 +43,72 @@ class PoleSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "chef_de_pole"]
 
 
+class PoleMembershipSerializer(serializers.ModelSerializer):
+    """
+    Appartenance à un pôle : user en lecture seule, is_manager éditable.
+    Utilisé pour l’ajout/retrait de membres et la gestion des responsables.
+    """
+    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
+    user_display = serializers.SerializerMethodField()
+    pole = serializers.PrimaryKeyRelatedField(queryset=Pole.objects.all(), required=False)
+    pole_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PoleMembership
+        fields = ["id", "user", "user_display", "pole", "pole_display", "is_manager"]
+        read_only_fields = ["id"]
+
+    def get_user_display(self, obj):
+        u = obj.user
+        return {"id": u.id, "username": getattr(u, "username", ""), "email": getattr(u, "email", "")}
+
+    def get_pole_display(self, obj):
+        return {"id": obj.pole.id, "nom": obj.pole.nom}
+
+    def validate(self, attrs):
+        if not self.instance and (not attrs.get("user") or not attrs.get("pole")):
+            raise serializers.ValidationError(
+                {"user": "Requis à la création.", "pole": "Requis à la création."}
+                if not attrs.get("user") and not attrs.get("pole")
+                else {"user": "Requis."} if not attrs.get("user") else {"pole": "Requis."}
+            )
+        return attrs
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        ret["user"] = instance.user_id
+        ret["pole"] = instance.pole_id
+        return ret
+
+
+class UserWithPolesSerializer(serializers.Serializer):
+    """
+    Lecture seule : liste les pôles d’un utilisateur avec son statut (is_manager) dans chacun.
+    Utilise PoleMembership comme source de vérité.
+    """
+    id = serializers.IntegerField(read_only=True)
+    username = serializers.CharField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    poles = serializers.SerializerMethodField()
+
+    def get_poles(self, obj):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        if isinstance(obj, User):
+            user = obj
+        else:
+            user = getattr(obj, "user", obj)
+        if not user or not getattr(user, "pk", None):
+            return []
+        memberships = PoleMembership.objects.filter(user=user).select_related("pole")
+        return [
+            {"pole_id": m.pole_id, "pole_nom": m.pole.nom, "is_manager": m.is_manager}
+            for m in memberships
+        ]
+
+
 class PoleMembreSerializer(serializers.ModelSerializer):
-    """Serializer Membre de pôle."""
+    """Serializer Membre de pôle (legacy PoleMembre)."""
 
     user_id = serializers.PrimaryKeyRelatedField(
         source="user", queryset=User.objects.all(), write_only=True
@@ -134,13 +199,43 @@ class ProfilUtilisateurSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "user"]
 
     def to_representation(self, instance: ProfilUtilisateur) -> dict:
-        """Expose le rôle effectif (admin si is_staff/is_superuser) pour le frontend."""
+        """Expose le rôle effectif et la liste des pôles avec statut (appartenance + is_manager)."""
         from api.permissions import _get_role
 
         data = super().to_representation(instance)
         effective_role = _get_role(instance.user)
         if effective_role is not None:
             data["role"] = effective_role
+        user = instance.user
+        if getattr(user, "pk", None):
+            poles_list = []
+            seen_pole_ids = set()
+            for m in PoleMembership.objects.filter(user=user).select_related("pole"):
+                seen_pole_ids.add(m.pole_id)
+                poles_list.append({
+                    "pole_id": m.pole_id,
+                    "pole_nom": m.pole.nom,
+                    "is_manager": m.is_manager,
+                })
+            for pole in Pole.objects.filter(chef_de_pole=user):
+                if pole.id not in seen_pole_ids:
+                    seen_pole_ids.add(pole.id)
+                    poles_list.append({
+                        "pole_id": pole.id,
+                        "pole_nom": pole.nom,
+                        "is_manager": True,
+                    })
+            for pm in PoleMembre.objects.filter(user=user).select_related("pole"):
+                if pm.pole_id not in seen_pole_ids:
+                    seen_pole_ids.add(pm.pole_id)
+                    poles_list.append({
+                        "pole_id": pm.pole_id,
+                        "pole_nom": pm.pole.nom,
+                        "is_manager": getattr(pm, "role", None) == "head",
+                    })
+            data["poles"] = poles_list
+        else:
+            data["poles"] = []
         return data
 
     def validate_email(self, value: str) -> str:

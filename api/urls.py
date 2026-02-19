@@ -12,6 +12,7 @@ from .views import (
     LogoutViewSet,
     NotificationViewSet,
     PoleMembreViewSet,
+    PoleMembershipViewSet,
     PieceJointeViewSet,
     PoleViewSet,
     ProfilUtilisateurViewSet,
@@ -26,6 +27,7 @@ router.register("entreprises", EntrepriseViewSet, basename="entreprise")
 router.register("delegues", DelegueSyndicalViewSet, basename="delegue")
 router.register("poles", PoleViewSet, basename="pole")
 router.register("pole-members", PoleMembreViewSet, basename="pole-member")
+router.register("pole-memberships", PoleMembershipViewSet, basename="pole-membership")
 router.register("profils", ProfilUtilisateurViewSet, basename="profil")
 router.register("documents", DocumentSyndicalViewSet, basename="document")
 router.register("requetes", RequeteViewSet, basename="requete")

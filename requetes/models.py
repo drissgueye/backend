@@ -13,19 +13,20 @@ from django.utils import timezone
 User = get_user_model()
 
 
+# Rôles globaux : hiérarchie syndicale uniquement (sans notion de pôle).
+# Le statut « responsable de pôle » est porté par PoleMembership.is_manager, pas par le rôle global.
 class RoleUtilisateur(models.TextChoices):
-    ADMIN = "admin", "Administrateur"
-    POLE_MANAGER = "pole_manager", "Chef de pôle"
-    HEAD = "head", "Chef de pôle (membre)"
-    ASSISTANT = "assistant", "Assistant de pôle"
-    DELEGATE = "delegate", "Délégué"
-    MEMBER = "member", "Membre"
+    SUPER_ADMIN = "super_admin", "Super Administrateur"
+    ADMIN = "admin", "Administrateur Syndical"
+    DELEGATE = "delegate", "Délégué Syndical"
+    MEMBER = "member", "Adhérent"  # rôle global : syndiqué sans rôle particulier (à ne pas confondre avec « membre d'un pôle »)
+    COMPTABLE = "comptable", "Comptable"
 
 
 class RolePoleMembre(models.TextChoices):
-    HEAD = "head", "Responsable"
+    HEAD = "head", "Responsable du pôle"
     ASSISTANT = "assistant", "Adjoint"
-    MEMBER = "member", "Membre"
+    MEMBER = "member", "Membre du pôle"  # rattaché au pôle sans être responsable (distinct du rôle global « Adhérent »)
 
 
 class TypeProbleme(models.TextChoices):
@@ -523,6 +524,40 @@ class PoleMembre(models.Model):
 
     def __str__(self) -> str:
         return f"{self.pole.nom} - {self.user}"
+
+
+class PoleMembership(models.Model):
+    """
+    Appartenance User ↔ Pole avec statut manager ou non.
+    Axe orthogonal au rôle global : un membre (role=MEMBER) peut être responsable
+    d'un pôle (is_manager=True) sans avoir le rôle global POLE_MANAGER.
+    """
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="pole_memberships",
+        db_index=True,
+    )
+    pole = models.ForeignKey(
+        Pole,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+        db_index=True,
+    )
+    is_manager = models.BooleanField(default=False)
+
+    class Meta:
+        verbose_name = "Appartenance au pôle"
+        verbose_name_plural = "Appartenances aux pôles"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "pole"],
+                name="unique_user_pole_membership",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user} – {self.pole.nom} (manager={self.is_manager})"
 
 
 class Reunion(models.Model):

@@ -25,6 +25,7 @@ from requetes.models import (
     HistoriqueAction,
     Notification,
     PoleMembre,
+    PoleMembership,
     PieceJointe,
     Pole,
     ProfilUtilisateur,
@@ -36,10 +37,13 @@ from .filters import DossierFilter, NotificationFilter, PieceJointeFilter, Reque
 from .permissions import (
     DossierAccessPermission,
     IsAuthenticatedAndHasRole,
+    IsPoleManager,
+    IsSuperAdminOrAdmin,
     PoleMembreAccessPermission,
     ReadOnlyUnlessAdmin,
     ReadOnlyUnlessAdminOrPoleManager,
     RequeteAccessPermission,
+    _pole_ids_for_user,
 )
 from .serializers import (
     AdminUserCreateSerializer,
@@ -49,6 +53,7 @@ from .serializers import (
     EntrepriseSerializer,
     NotificationSerializer,
     PoleMembreSerializer,
+    PoleMembershipSerializer,
     PieceJointeSerializer,
     PoleSerializer,
     ProfilUtilisateurSerializer,
@@ -71,15 +76,71 @@ def _get_role(user: User) -> str | None:
 
 
 def _user_pole_ids(user: User) -> list[int]:
-    return list(
+    """Pôles dont l'utilisateur est membre (PoleMembership + legacy Pole.membres / chef_de_pole)."""
+    ids = set(_pole_ids_for_user(user))
+    ids |= set(
         Pole.objects.filter(Q(membres=user) | Q(chef_de_pole=user)).values_list("id", flat=True)
     )
+    return list(ids)
 
 
 def _is_valid_choice(model, field_name: str, value: str) -> bool:
     field = model._meta.get_field(field_name)
     choices = {choice[0] for choice in field.choices}
     return value in choices
+
+
+def _entreprise_id_for_user(user: Any) -> int | None:
+    """Retourne l'entreprise_id du profil de l'utilisateur, ou None."""
+    if not getattr(user, "pk", None):
+        return None
+    profil = getattr(user, "profil", None)
+    if isinstance(profil, ProfilUtilisateur):
+        return getattr(profil, "entreprise_id", None)
+    return None
+
+
+def _pole_entreprise_ids(pole: Pole, exclude_user_id: int | None = None) -> list[int]:
+    """
+    Retourne les entreprise_id des membres déjà présents dans le pôle
+    (PoleMembership + PoleMembre + chef_de_pole), sans compter exclude_user_id.
+    """
+    user_ids = set()
+    user_ids.update(
+        PoleMembership.objects.filter(pole=pole).values_list("user_id", flat=True)
+    )
+    user_ids.update(
+        PoleMembre.objects.filter(pole=pole).values_list("user_id", flat=True)
+    )
+    if pole.chef_de_pole_id:
+        user_ids.add(pole.chef_de_pole_id)
+    if exclude_user_id is not None:
+        user_ids.discard(exclude_user_id)
+    return list(
+        ProfilUtilisateur.objects.filter(user_id__in=user_ids)
+        .exclude(entreprise_id__isnull=True)
+        .values_list("entreprise_id", flat=True)
+        .distinct()
+    )
+
+
+def _raise_if_same_company_in_pole(pole: Pole, user: Any, context: str = "") -> None:
+    """
+    Règle métier : deux personnes d'une même entreprise ne peuvent pas appartenir au même pôle.
+    Lève ValidationError si l'utilisateur a une entreprise déjà représentée dans le pôle.
+    """
+    from rest_framework.exceptions import ValidationError
+
+    entreprise_id = _entreprise_id_for_user(user)
+    if entreprise_id is None:
+        return
+    existing = _pole_entreprise_ids(pole, exclude_user_id=getattr(user, "pk", None))
+    if entreprise_id in existing:
+        raise ValidationError(
+            {"detail": "Deux personnes d'une même entreprise ne peuvent pas appartenir au même pôle."}
+            if not context
+            else {context: "Deux personnes d'une même entreprise ne peuvent pas appartenir au même pôle."}
+        )
 
 
 class BaseModelViewSet(viewsets.ModelViewSet):
@@ -151,6 +212,9 @@ class PoleViewSet(BaseModelViewSet):
 
         serializer = PoleMembreSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        user_to_add = serializer.validated_data.get("user")
+        if user_to_add:
+            _raise_if_same_company_in_pole(pole, user_to_add)
         try:
             member = serializer.save(pole=pole)
         except IntegrityError:
@@ -187,6 +251,9 @@ class PoleMembreViewSet(BaseModelViewSet):
                 raise PermissionDenied(
                     "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."
                 )
+            user_to_add = serializer.validated_data.get("user")
+            if user_to_add:
+                _raise_if_same_company_in_pole(pole, user_to_add)
         serializer.save()
 
     def perform_update(self, serializer):
@@ -199,6 +266,75 @@ class PoleMembreViewSet(BaseModelViewSet):
         if new_role and profil.role != new_role:
             profil.role = new_role
             profil.save(update_fields=["role"])
+
+
+class PoleMembershipViewSet(BaseModelViewSet):
+    """
+    Gestion des appartenances aux pôles (User ↔ Pole, is_manager).
+    Ajout/retrait de membres et modification du statut manager : réservé aux admins
+    et aux responsables du pôle concerné (PoleMembership.is_manager ou chef_de_pole).
+    """
+
+    queryset = PoleMembership.objects.select_related("user", "pole").all()
+    serializer_class = PoleMembershipSerializer
+    permission_classes = [IsAuthenticatedAndHasRole, ReadOnlyUnlessAdminOrPoleManager]
+    filterset_fields = ["pole", "user", "is_manager"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if _get_role(self.request.user) == "admin":
+            return qs
+        pole_ids = _user_pole_ids(self.request.user)
+        manager_pole_ids = list(
+            PoleMembership.objects.filter(
+                user=self.request.user, is_manager=True
+            ).values_list("pole_id", flat=True)
+        )
+        manager_pole_ids += list(
+            Pole.objects.filter(chef_de_pole=self.request.user).values_list("id", flat=True)
+        )
+        if not manager_pole_ids:
+            return qs.none()
+        return qs.filter(pole_id__in=manager_pole_ids)
+
+    def get_pole_from_request(self, request):
+        """Pour IsPoleManager : récupère le pôle depuis le body (create) ou l'objet (update/delete)."""
+        pole_id = (request.data or {}).get("pole") or (request.data or {}).get("pole_id")
+        if pole_id is not None:
+            return Pole.objects.filter(pk=pole_id).first()
+        return None
+
+    def perform_create(self, serializer):
+        pole = serializer.validated_data.get("pole")
+        if not pole:
+            pole_id = self.request.data.get("pole") or self.request.data.get("pole_id")
+            if pole_id:
+                pole = Pole.objects.filter(pk=pole_id).first()
+        if pole and _get_role(self.request.user) != "admin":
+            if not PoleMembership.objects.filter(
+                user=self.request.user, pole=pole, is_manager=True
+            ).exists() and pole.chef_de_pole_id != self.request.user.id:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(
+                    "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."
+                )
+        user_to_add = serializer.validated_data.get("user")
+        if pole and user_to_add:
+            _raise_if_same_company_in_pole(pole, user_to_add)
+        serializer.save()
+
+    def check_object_permissions(self, request, obj):
+        """Accès objet : admin ou responsable du pôle de cette appartenance."""
+        if _get_role(request.user) == "admin":
+            return
+        if PoleMembership.objects.filter(
+            user=request.user, pole=obj.pole, is_manager=True
+        ).exists() or obj.pole.chef_de_pole_id == request.user.id:
+            return
+        from rest_framework.exceptions import PermissionDenied
+        raise PermissionDenied(
+            "Seul l'administrateur ou le responsable de ce pôle peut modifier cette appartenance."
+        )
 
 
 class ProfilUtilisateurViewSet(BaseModelViewSet):
@@ -290,6 +426,14 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
 
 
 class RequeteViewSet(BaseModelViewSet):
+    """
+    ViewSet métier des requêtes (demandes).
+    Filtrage par rôle/pôle dans get_queryset :
+    - SUPER_ADMIN/ADMIN → voit tout
+    - Responsable de pôle (PoleMembership.is_manager / chef_de_pole) → requêtes de son pôle
+    - Membre de pôle → requêtes de son pôle + les siennes
+    - Membre simple / délégué → selon règles métier (délégué = sa compagnie, membre = les siennes)
+    """
     serializer_class = RequeteSerializer
     permission_classes = [IsAuthenticatedAndHasRole, RequeteAccessPermission]
     filterset_class = RequeteFilter
@@ -308,8 +452,11 @@ class RequeteViewSet(BaseModelViewSet):
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
             if delegue and delegue.entreprise_id:
-                return qs.filter(travailleur__profil__entreprise_id=delegue.entreprise_id)
-            return qs.none()
+                return qs.filter(
+                    Q(travailleur=self.request.user)
+                    | Q(travailleur__profil__entreprise_id=delegue.entreprise_id)
+                )
+            return qs.filter(travailleur=self.request.user)
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
             return qs.filter(
