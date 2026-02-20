@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.http import HttpResponse
 from django.db import transaction, IntegrityError
 from django.db.models import Q
 from django_filters.rest_framework import DjangoFilterBackend
@@ -18,11 +21,13 @@ from drf_spectacular.utils import OpenApiExample, extend_schema
 
 from requetes.models import (
     ActionHistorique,
+    ActiviteRequete,
     Dossier,
     DelegueSyndical,
     Entreprise,
     DocumentSyndical,
     HistoriqueAction,
+    MaquetteCompteRendu,
     Notification,
     PoleMembre,
     PoleMembership,
@@ -30,10 +35,25 @@ from requetes.models import (
     Pole,
     ProfilUtilisateur,
     Requete,
+    RequeteMessage,
     Reunion,
+    TypeProbleme,
+)
+from requetes.services.pole_processors import (
+    get_pole_processor,
+    PoleProcessorActionNotAllowedError,
+    PoleProcessorNotFoundError,
+    PoleProcessorValidationError,
 )
 
-from .filters import DossierFilter, NotificationFilter, PieceJointeFilter, RequeteFilter, ReunionFilter
+from .filters import (
+    DossierFilter,
+    MaquetteCompteRenduFilter,
+    NotificationFilter,
+    PieceJointeFilter,
+    RequeteFilter,
+    ReunionFilter,
+)
 from .permissions import (
     DossierAccessPermission,
     IsAuthenticatedAndHasRole,
@@ -46,11 +66,13 @@ from .permissions import (
     _pole_ids_for_user,
 )
 from .serializers import (
+    ActiviteRequeteSerializer,
     AdminUserCreateSerializer,
     DossierSerializer,
     DelegueSyndicalSerializer,
     DocumentSyndicalSerializer,
     EntrepriseSerializer,
+    HistoriqueActionSerializer,
     NotificationSerializer,
     PoleMembreSerializer,
     PoleMembershipSerializer,
@@ -59,8 +81,11 @@ from .serializers import (
     ProfilUtilisateurSerializer,
     RegisterSerializer,
     EmailOrUsernameTokenObtainPairSerializer,
+    RequeteMessageCreateSerializer,
+    RequeteMessageSerializer,
     RequeteSerializer,
     ReunionSerializer,
+    MaquetteCompteRenduSerializer,
 )
 
 User = get_user_model()
@@ -88,6 +113,30 @@ def _is_valid_choice(model, field_name: str, value: str) -> bool:
     field = model._meta.get_field(field_name)
     choices = {choice[0] for choice in field.choices}
     return value in choices
+
+
+class TypeProblemeChoicesView(APIView):
+    """
+    Retourne les choix de type de problème (type d'activité) pour le formulaire requête.
+    Si ?pole=<id> est fourni et que le pôle a types_problemes renseigné, seuls ces types sont renvoyés.
+    Sinon tous les types sont renvoyés. Permet au frontend d'afficher les types en fonction du pôle choisi.
+    """
+    permission_classes = [IsAuthenticatedAndHasRole]
+
+    def get(self, request):
+        pole_id = request.query_params.get("pole")
+        all_choices = [{"value": c[0], "label": c[1]} for c in TypeProbleme.choices]
+        if not pole_id:
+            return Response(all_choices)
+        try:
+            pole = Pole.objects.get(pk=pole_id)
+        except (Pole.DoesNotExist, ValueError):
+            return Response(all_choices)
+        if not pole.types_problemes:
+            return Response(all_choices)
+        allowed = set(pole.types_problemes)
+        filtered = [c for c in all_choices if c["value"] in allowed]
+        return Response(filtered if filtered else all_choices)
 
 
 def _entreprise_id_for_user(user: Any) -> int | None:
@@ -164,7 +213,7 @@ class EntrepriseViewSet(BaseModelViewSet):
 
 
 class DelegueSyndicalViewSet(BaseModelViewSet):
-    queryset = DelegueSyndical.objects.select_related("user", "entreprise").all()
+    queryset = DelegueSyndical.objects.filter(is_active=True).select_related("user", "entreprise")
     serializer_class = DelegueSyndicalSerializer
     permission_classes = [IsAuthenticatedAndHasRole, ReadOnlyUnlessAdmin]
     filterset_fields = ["user", "entreprise", "is_active"]
@@ -203,10 +252,15 @@ class PoleViewSet(BaseModelViewSet):
             qs = PoleMembre.objects.select_related("user").filter(pole=pole)
             return Response(PoleMembreSerializer(qs, many=True).data, status=status.HTTP_200_OK)
 
+        # Seuls admin et responsable de CE pôle (chef ou is_manager) peuvent ajouter ; pas un autre pôle.
         role = _get_role(request.user)
-        if role != "admin" and pole.chef_de_pole_id != request.user.id:
+        is_responsible = (
+            pole.chef_de_pole_id == request.user.id
+            or PoleMembership.objects.filter(user=request.user, pole=pole, is_manager=True).exists()
+        )
+        if role != "admin" and not is_responsible:
             return Response(
-                {"detail": "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."},
+                {"detail": "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre. Vous ne pouvez pas ajouter de membre à un autre pôle."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -238,6 +292,22 @@ class PoleMembreViewSet(BaseModelViewSet):
     permission_classes = [IsAuthenticatedAndHasRole, ReadOnlyUnlessAdminOrPoleManager, PoleMembreAccessPermission]
     filterset_fields = ["pole", "user", "role"]
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if _get_role(self.request.user) == "admin":
+            return qs
+        manager_pole_ids = list(
+            PoleMembership.objects.filter(
+                user=self.request.user, is_manager=True
+            ).values_list("pole_id", flat=True)
+        )
+        manager_pole_ids += list(
+            Pole.objects.filter(chef_de_pole=self.request.user).values_list("id", flat=True)
+        )
+        if not manager_pole_ids:
+            return qs.none()
+        return qs.filter(pole_id__in=manager_pole_ids)
+
     def perform_create(self, serializer):
         pole = serializer.validated_data.get("pole")
         if not pole and self.request.data:
@@ -245,11 +315,16 @@ class PoleMembreViewSet(BaseModelViewSet):
             if pole_id:
                 pole = Pole.objects.filter(pk=pole_id).first()
         if pole:
+            # Seuls admin et responsable de CE pôle peuvent ajouter ; refus si autre pôle.
             role = _get_role(self.request.user)
-            if role != "admin" and pole.chef_de_pole_id != self.request.user.id:
+            is_responsible = (
+                pole.chef_de_pole_id == self.request.user.id
+                or PoleMembership.objects.filter(user=self.request.user, pole=pole, is_manager=True).exists()
+            )
+            if role != "admin" and not is_responsible:
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied(
-                    "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."
+                    "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre. Vous ne pouvez pas ajouter de membre à un autre pôle."
                 )
             user_to_add = serializer.validated_data.get("user")
             if user_to_add:
@@ -310,13 +385,16 @@ class PoleMembershipViewSet(BaseModelViewSet):
             pole_id = self.request.data.get("pole") or self.request.data.get("pole_id")
             if pole_id:
                 pole = Pole.objects.filter(pk=pole_id).first()
+        # Seuls admin et responsable de CE pôle peuvent ajouter ; refus si autre pôle.
         if pole and _get_role(self.request.user) != "admin":
-            if not PoleMembership.objects.filter(
-                user=self.request.user, pole=pole, is_manager=True
-            ).exists() and pole.chef_de_pole_id != self.request.user.id:
+            is_responsible = (
+                pole.chef_de_pole_id == self.request.user.id
+                or PoleMembership.objects.filter(user=self.request.user, pole=pole, is_manager=True).exists()
+            )
+            if not is_responsible:
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied(
-                    "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre."
+                    "Seul l'administrateur ou le responsable de ce pôle peut ajouter un membre. Vous ne pouvez pas ajouter de membre à un autre pôle."
                 )
         user_to_add = serializer.validated_data.get("user")
         if pole and user_to_add:
@@ -397,6 +475,14 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         profil = getattr(user, "profil", None)
+        if profil and profil.role == "delegate" and profil.entreprise_id:
+            email = (getattr(profil, "email", None) or getattr(user, "email", None) or "").strip() or "contact@syndicat.local"
+            telephone = (getattr(profil, "telephone", None) or "").strip() or "Non renseigné"
+            DelegueSyndical.objects.get_or_create(
+                user=user,
+                entreprise_id=profil.entreprise_id,
+                defaults={"email": email, "telephone": telephone[:30], "is_active": True},
+            )
         if profil:
             return Response(
                 ProfilUtilisateurSerializer(profil).data,
@@ -407,6 +493,20 @@ class ProfilUtilisateurViewSet(BaseModelViewSet):
     def perform_update(self, serializer):
         profil = serializer.save()
         user = profil.user
+        if profil.role == "delegate":
+            if profil.entreprise_id:
+                DelegueSyndical.objects.filter(user=user).exclude(entreprise_id=profil.entreprise_id).update(is_active=False)
+                email = (profil.email or getattr(user, "email", None) or "").strip() or "contact@syndicat.local"
+                telephone = (getattr(profil, "telephone", None) or "").strip() or "Non renseigné"
+                DelegueSyndical.objects.update_or_create(
+                    user=user,
+                    entreprise_id=profil.entreprise_id,
+                    defaults={"email": email, "telephone": telephone[:30], "is_active": True},
+                )
+            else:
+                DelegueSyndical.objects.filter(user=user).update(is_active=True)
+        else:
+            DelegueSyndical.objects.filter(user=user).update(is_active=False)
         role_to_pole_role = {
             "pole_manager": "head",
             "head": "head",
@@ -444,7 +544,7 @@ class RequeteViewSet(BaseModelViewSet):
         role = _get_role(self.request.user)
         qs = (
             Requete.objects.select_related("pole", "entreprise", "delegue_syndical", "dossier")
-            .select_related("travailleur")
+            .select_related("travailleur", "travailleur__profil")
             .all()
         )
         if role == "admin":
@@ -456,6 +556,8 @@ class RequeteViewSet(BaseModelViewSet):
                     Q(travailleur=self.request.user)
                     | Q(travailleur__profil__entreprise_id=delegue.entreprise_id)
                 )
+            return qs.filter(travailleur=self.request.user)
+        if role == "member":
             return qs.filter(travailleur=self.request.user)
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
@@ -524,7 +626,12 @@ class RequeteViewSet(BaseModelViewSet):
             return Response({"statut": "Valeur invalide."}, status=status.HTTP_400_BAD_REQUEST)
         ancien_statut = requete.statut
         requete.statut = nouveau_statut
-        requete.save(update_fields=["statut", "updated_at"])
+        update_fields = ["statut", "updated_at"]
+        if nouveau_statut == "closed" and not requete.date_cloture:
+            from django.utils import timezone
+            requete.date_cloture = timezone.now().date()
+            update_fields.append("date_cloture")
+        requete.save(update_fields=update_fields)
         HistoriqueAction.enregistrer_action(
             content_object=requete,
             utilisateur=request.user,
@@ -541,6 +648,177 @@ class RequeteViewSet(BaseModelViewSet):
             requete=requete,
         )
         return Response(self.get_serializer(requete).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="pole-actions")
+    @extend_schema(description="Liste les actions métier disponibles pour cette requête (selon le pôle).")
+    def pole_actions(self, request, pk=None):
+        """Liste des actions proposées par le processeur du pôle de la requête."""
+        requete = self.get_object()
+        try:
+            processor = get_pole_processor(requete.pole)
+        except PoleProcessorNotFoundError as e:
+            return Response(
+                {"detail": e.message},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        actions = processor.get_available_actions(requete)
+        allowed_transitions = processor.get_allowed_transitions(requete)
+        return Response(
+            {
+                "actions": [
+                    {
+                        "id": a.id,
+                        "label": a.label,
+                        "description": a.description or "",
+                        "required_fields": list(a.required_fields),
+                        "optional_fields": list(a.optional_fields),
+                    }
+                    for a in actions
+                ],
+                "allowed_transitions": allowed_transitions,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="execute-pole-action")
+    @extend_schema(
+        description="Exécute une action métier du pôle (ex: assigner avocat, planifier réunion).",
+        examples=[
+            OpenApiExample(
+                "Action juridique",
+                value={"action_id": "assign_lawyer", "lawyer_name": "Maître X", "lawyer_contact": "contact@cabinet.fr"},
+            ),
+        ],
+    )
+    def execute_pole_action(self, request, pk=None):
+        """Exécution d'une action métier via le processeur du pôle."""
+        requete = self.get_object()
+        action_id = request.data.get("action_id")
+        if not action_id:
+            return Response(
+                {"action_id": "Champ requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            processor = get_pole_processor(requete.pole)
+        except PoleProcessorNotFoundError as e:
+            return Response(
+                {"detail": e.message},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        payload = {k: v for k, v in request.data.items() if k != "action_id"}
+        try:
+            result = processor.execute_action(
+                requete,
+                action_id,
+                user=request.user,
+                **payload,
+            )
+        except PoleProcessorValidationError as e:
+            return Response(
+                {"detail": e.message, "errors": e.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PoleProcessorActionNotAllowedError as e:
+            return Response(
+                {"detail": e.message},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not result.success:
+            return Response(
+                {"detail": result.message, "errors": result.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {"message": result.message, "data": result.data},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["get"], url_path="historique")
+    def historique(self, request, pk=None):
+        """Liste l'historique des actions (HistoriqueAction) pour cette requête."""
+        requete = self.get_object()
+        ct = ContentType.objects.get_for_model(Requete)
+        qs = (
+            HistoriqueAction.objects.filter(
+                content_type=ct, object_id=requete.pk
+            )
+            .select_related("utilisateur")
+            .order_by("-timestamp")
+        )
+        serializer = HistoriqueActionSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get", "post"], url_path="activites")
+    def activites(self, request, pk=None):
+        """Liste les activités planifiées de la requête ou en crée une (date affichée dans le calendrier)."""
+        requete = self.get_object()
+        if request.method == "GET":
+            qs = ActiviteRequete.objects.filter(requete=requete).select_related("created_by").order_by("-date_planifiee")
+            serializer = ActiviteRequeteSerializer(qs, many=True)
+            return Response(serializer.data)
+        data = request.data.copy()
+        data.setdefault("requete_id", requete.pk)
+        data.setdefault("created_by_id", request.user.pk)
+        serializer = ActiviteRequeteSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(requete=requete, created_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get", "post"], url_path="messages")
+    def messages(self, request, pk=None):
+        """Liste les messages ou envoie un nouveau (réponse au besoin d'info)."""
+        requete = self.get_object()
+        if request.method == "POST":
+            data = request.data.copy()
+            serializer = RequeteMessageCreateSerializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            msg = RequeteMessage.objects.create(
+                requete=requete,
+                utilisateur=request.user,
+                contenu=serializer.validated_data["contenu"].strip(),
+                is_interne=serializer.validated_data.get("is_interne", False),
+            )
+            msg = RequeteMessage.objects.select_related("utilisateur", "utilisateur__profil").get(pk=msg.pk)
+            return Response(RequeteMessageSerializer(msg).data, status=status.HTTP_201_CREATED)
+        qs = (
+            RequeteMessage.objects.filter(requete=requete)
+            .select_related("utilisateur", "utilisateur__profil")
+            .order_by("created_at")
+        )
+        serializer = RequeteMessageSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="assignable-members")
+    def assignable_members(self, request, pk=None):
+        """Liste les utilisateurs assignables (membres du pôle de la requête) pour l'action « Assigner un responsable »."""
+        requete = self.get_object()
+        pole = getattr(requete, "pole", None)
+        if not pole:
+            return Response([], status=status.HTTP_200_OK)
+        user_ids = set(
+            PoleMembre.objects.filter(pole=pole).values_list("user_id", flat=True)
+        )
+        user_ids |= set(
+            PoleMembership.objects.filter(pole=pole).values_list("user_id", flat=True)
+        )
+        if pole.chef_de_pole_id:
+            user_ids.add(pole.chef_de_pole_id)
+        if not user_ids:
+            return Response([], status=status.HTTP_200_OK)
+        User = get_user_model()
+        users = User.objects.filter(pk__in=user_ids).order_by("first_name", "last_name")
+        data = [
+            {
+                "id": u.pk,
+                "user_id_read": u.pk,
+                "user_first_name": getattr(u, "first_name", "") or "",
+                "user_last_name": getattr(u, "last_name", "") or "",
+                "user_email": getattr(u, "email", "") or "",
+            }
+            for u in users
+        ]
+        return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="pieces-jointes")
     @extend_schema(
@@ -570,6 +848,28 @@ class RequeteViewSet(BaseModelViewSet):
         )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["get"], url_path="compte-rendu-pdf")
+    def compte_rendu_pdf(self, request, pk=None):
+        """Exporte le compte rendu de clôture en PDF (requête clôturée)."""
+        requete = self.get_object()
+        if requete.statut != "closed":
+            return Response(
+                {"detail": "La requête n'est pas clôturée. Impossible d'exporter le compte rendu en PDF."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            from api.pdf_utils import build_compte_rendu_pdf
+            pdf_bytes = build_compte_rendu_pdf(requete)
+        except RuntimeError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        filename = f"compte-rendu-{requete.numero_reference}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
 
 class DossierViewSet(BaseModelViewSet):
     serializer_class = DossierSerializer
@@ -592,6 +892,8 @@ class DossierViewSet(BaseModelViewSet):
             if delegue and delegue.entreprise_id:
                 return qs.filter(requetes__travailleur__profil__entreprise_id=delegue.entreprise_id).distinct()
             return qs.none()
+        if role == "member":
+            return qs.filter(requetes__travailleur=self.request.user).distinct()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
             return qs.filter(
@@ -723,6 +1025,8 @@ class PieceJointeViewSet(BaseModelViewSet):
             if delegue and delegue.entreprise_id:
                 return qs.filter(requete__travailleur__profil__entreprise_id=delegue.entreprise_id)
             return qs.none()
+        if role == "member":
+            return qs.filter(requete__travailleur=self.request.user)
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
             return qs.filter(
@@ -731,12 +1035,160 @@ class PieceJointeViewSet(BaseModelViewSet):
         return qs.filter(requete__travailleur=self.request.user)
 
 
+class MaquetteCompteRenduViewSet(viewsets.ReadOnlyModelViewSet):
+    """Maquettes de compte rendu (lecture seule). Filtre ?is_default=true pour la maquette par défaut."""
+    queryset = MaquetteCompteRendu.objects.all()
+    serializer_class = MaquetteCompteRenduSerializer
+    permission_classes = [IsAuthenticatedAndHasRole]
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = MaquetteCompteRenduFilter
+    ordering = ["ordre", "nom"]
+
+
 class ReunionViewSet(BaseModelViewSet):
     serializer_class = ReunionSerializer
     permission_classes = [IsAuthenticatedAndHasRole]
     filterset_class = ReunionFilter
     search_fields = ["ordre_du_jour", "compte_rendu"]
     ordering_fields = ["date_heure", "statut"]
+
+    @action(detail=False, methods=["get"], url_path="calendar-events")
+    def calendar_events(self, request):
+        """
+        Liste les événements calendrier : réunions (dossiers) + activités des requêtes (dates choisies dans le suivi).
+        Query params optionnels : start, end (ISO datetime). event_type=reunion|activite pour filtrer.
+        """
+        from django.utils import timezone as django_tz
+        from django.utils.dateparse import parse_datetime
+
+        start_param = request.query_params.get("start")
+        end_param = request.query_params.get("end")
+        start_dt = parse_datetime(start_param) if start_param else None
+        end_dt = parse_datetime(end_param) if end_param else None
+        now = django_tz.now()
+        if not start_dt:
+            start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if django_tz.is_naive(start_dt):
+                start_dt = django_tz.make_aware(start_dt)
+        if not end_dt:
+            from calendar import monthrange
+            last_day = monthrange(now.year, now.month)[1]
+            end_dt = now.replace(day=last_day, hour=23, minute=59, second=59, microsecond=999999)
+            if django_tz.is_naive(end_dt):
+                end_dt = django_tz.make_aware(end_dt)
+        if start_dt and django_tz.is_naive(start_dt):
+            start_dt = django_tz.make_aware(start_dt)
+        if end_dt and django_tz.is_naive(end_dt):
+            end_dt = django_tz.make_aware(end_dt)
+        event_type_filter = request.query_params.get("event_type")
+
+        events = []
+
+        # Réunions (dossiers)
+        if event_type_filter != "activite":
+            qs = self.filter_queryset(self.get_queryset()).order_by("date_heure")
+            qs = qs.filter(date_heure__gte=start_dt, date_heure__lte=end_dt)
+            for r in qs:
+                start = r.date_heure
+                end = start + timedelta(hours=1)
+                titre = f"{r.get_type_reunion_display()} – {r.dossier.numero_dossier}"
+                if r.lieu:
+                    titre += f" – {r.lieu}"
+                events.append({
+                    "id": f"reunion-{r.id}",
+                    "event_type": "reunion",
+                    "title": titre,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "type_reunion": r.type_reunion,
+                    "type_reunion_display": r.get_type_reunion_display(),
+                    "statut": r.statut,
+                    "statut_display": r.get_statut_display(),
+                    "dossier_id": r.dossier_id,
+                    "dossier_numero": r.dossier.numero_dossier,
+                    "lieu": r.lieu or "",
+                    "ordre_du_jour": r.ordre_du_jour or "",
+                    "reunion_id": r.id,
+                })
+
+        # Activités des requêtes (programmées lors du traitement des requêtes par les pôles)
+        requete_ids = []
+        if event_type_filter != "reunion":
+            try:
+                role = _get_role(request.user)
+                req_qs = Requete.objects.all()
+                if role == "admin":
+                    pass
+                elif role == "delegate":
+                    delegue = DelegueSyndical.objects.filter(user=request.user).first()
+                    if delegue and delegue.entreprise_id:
+                        req_qs = req_qs.filter(
+                            Q(travailleur=request.user)
+                            | Q(travailleur__profil__entreprise_id=delegue.entreprise_id)
+                        )
+                    else:
+                        req_qs = req_qs.filter(travailleur=request.user)
+                elif role == "member":
+                    req_qs = req_qs.filter(travailleur=request.user)
+                else:
+                    pids = _user_pole_ids(request.user)
+                    if pids:
+                        req_qs = req_qs.filter(
+                            Q(pole_id__in=pids) | Q(travailleur=request.user)
+                        )
+                    else:
+                        req_qs = req_qs.filter(travailleur=request.user)
+                requete_ids = list(req_qs.values_list("id", flat=True))
+                if requete_ids:
+                    activites = ActiviteRequete.objects.filter(
+                        requete_id__in=requete_ids,
+                        date_planifiee__gte=start_dt,
+                        date_planifiee__lte=end_dt,
+                        statut__in=["planned", "completed"],
+                    ).select_related("requete", "created_by").order_by("date_planifiee")
+                    for a in activites:
+                        start = a.date_planifiee
+                        end = start + timedelta(hours=1)
+                        events.append({
+                            "id": f"activite-{a.id}",
+                            "event_type": "activite",
+                            "title": a.titre,
+                            "start": start.isoformat(),
+                            "end": end.isoformat(),
+                            "type_activite": a.type_activite,
+                            "type_activite_display": a.get_type_activite_display(),
+                            "statut": a.statut,
+                            "statut_display": a.get_statut_display(),
+                            "requete_id": a.requete_id,
+                            "numero_reference": a.requete.numero_reference,
+                            "description": a.description or "",
+                            "activite_id": a.id,
+                        })
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                err_str = str(e).lower()
+                if "no such table" in err_str or "activite_requete" in err_str:
+                    logger.info(
+                        "Calendrier: table ActiviteRequete absente. Exécuter: python manage.py migrate requetes"
+                    )
+                else:
+                    logger.exception("Calendrier: erreur chargement activités requêtes")
+        events.sort(key=lambda e: e["start"])
+        resp = Response(events)
+        if request.query_params.get("debug") == "1":
+            try:
+                n_activites_total = ActiviteRequete.objects.count()
+                n_reunions = sum(1 for e in events if e.get("event_type") == "reunion")
+                n_activites = sum(1 for e in events if e.get("event_type") == "activite")
+                resp["X-Calendar-Debug"] = (
+                    f"requetes_vues={len(requete_ids)}; "
+                    f"activites_en_base={n_activites_total}; "
+                    f"reunions={n_reunions}; activites_retournees={n_activites}"
+                )
+            except Exception:
+                pass
+        return resp
 
     def get_queryset(self):
         role = _get_role(self.request.user)
@@ -748,6 +1200,8 @@ class ReunionViewSet(BaseModelViewSet):
             if delegue and delegue.entreprise_id:
                 return qs.filter(dossier__requetes__travailleur__profil__entreprise_id=delegue.entreprise_id).distinct()
             return qs.none()
+        if role == "member":
+            return qs.filter(dossier__requetes__travailleur=self.request.user).distinct()
         pole_ids = _user_pole_ids(self.request.user)
         if pole_ids:
             return qs.filter(

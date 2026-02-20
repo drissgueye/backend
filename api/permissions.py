@@ -20,6 +20,8 @@ def _get_role(user: Any) -> str | None:
     """
     Retourne le rôle effectif pour l'affichage : admin, delegate (si mandat actif), ou rôle du profil.
     Ainsi un utilisateur avec profil.role=member mais un DelegueSyndical actif s'affiche comme « Délégué ».
+    Si l'utilisateur est authentifié mais n'a pas encore de ProfilUtilisateur, on retourne "member" pour
+    permettre l'accès à /profils/me/ (qui crée le profil à la volée).
     """
     if isinstance(user, AnonymousUser) or not user.is_authenticated:
         return None
@@ -30,7 +32,8 @@ def _get_role(user: Any) -> str | None:
     profil = getattr(user, "profil", None)
     if isinstance(profil, ProfilUtilisateur):
         return profil.role
-    return None
+    # Utilisateur authentifié sans profil : traiter comme "member" pour que /profils/me/ soit accessible
+    return "member"
 
 
 def _is_super_admin_or_admin(user: Any) -> bool:
@@ -153,15 +156,19 @@ class RequeteAccessPermission(BasePermission):
         role = _get_role(request.user)
         if role is None:
             return False
+        # Le demandeur (travailleur) a toujours accès à sa requête (lecture + mise à jour statut, etc.)
+        if getattr(obj, "travailleur_id", None) == request.user.pk:
+            return True
         if role == "admin":
             return True
-        if _is_pole_member(request.user, obj.pole):
+        pole = getattr(obj, "pole", None)
+        if pole is not None and _is_pole_member(request.user, pole):
             return True
-        if role in ["pole_manager", "head", "assistant"]:
-            return obj.pole.membres.filter(id=request.user.id).exists() or obj.pole.chef_de_pole_id == request.user.id
+        if pole is not None and pole.id in _pole_ids_for_user(request.user):
+            return True
+        if pole is not None and role in ["pole_manager", "head", "assistant"]:
+            return pole.membres.filter(id=request.user.id).exists() or pole.chef_de_pole_id == request.user.id
         if role == "delegate":
-            if obj.travailleur_id == request.user.id:
-                return True
             if obj.delegue_syndical and obj.delegue_syndical.user_id == request.user.id:
                 return True
             mandat = DelegueSyndical.objects.filter(user=request.user).first()
@@ -171,9 +178,7 @@ class RequeteAccessPermission(BasePermission):
                     return True
             return False
         if role == "member":
-            if obj.travailleur_id == request.user.id:
-                return True
-            return _is_pole_member(request.user, obj.pole)
+            return False  # déjà traité par le check travailleur_id ci-dessus
         return False
 
 
@@ -199,9 +204,7 @@ class DossierAccessPermission(BasePermission):
                     return True
             return False
         if role == "member":
-            if obj.requetes.filter(travailleur_id=request.user.id).exists():
-                return True
-            return _is_pole_member(request.user, obj.pole)
+            return obj.requetes.filter(travailleur_id=request.user.id).exists()
         return False
 
 

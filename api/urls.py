@@ -10,6 +10,7 @@ from .views import (
     DocumentSyndicalViewSet,
     EntrepriseViewSet,
     LogoutViewSet,
+    MaquetteCompteRenduViewSet,
     NotificationViewSet,
     PoleMembreViewSet,
     PoleMembershipViewSet,
@@ -20,6 +21,7 @@ from .views import (
     CustomTokenObtainPairView,
     RequeteViewSet,
     ReunionViewSet,
+    TypeProblemeChoicesView,
 )
 
 router = DefaultRouter()
@@ -31,6 +33,7 @@ router.register("pole-memberships", PoleMembershipViewSet, basename="pole-member
 router.register("profils", ProfilUtilisateurViewSet, basename="profil")
 router.register("documents", DocumentSyndicalViewSet, basename="document")
 router.register("requetes", RequeteViewSet, basename="requete")
+router.register("maquettes-compte-rendu", MaquetteCompteRenduViewSet, basename="maquette-compte-rendu")
 router.register("dossiers", DossierViewSet, basename="dossier")
 router.register("pieces-jointes", PieceJointeViewSet, basename="piece-jointe")
 router.register("reunions", ReunionViewSet, basename="reunion")
@@ -41,5 +44,6 @@ urlpatterns = [
     path("auth/login/", CustomTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/register/", RegisterAPIView.as_view(), name="register"),
+    path("type-probleme-choices/", TypeProblemeChoicesView.as_view(), name="type-probleme-choices"),
     path("", include(router.urls)),
 ]

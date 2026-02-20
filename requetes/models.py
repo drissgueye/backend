@@ -166,9 +166,18 @@ class Entreprise(models.Model):
 
 
 class Pole(models.Model):
-    """Décrit un pôle du syndicat et ses membres."""
+    """
+    Décrit un pôle du syndicat et ses membres.
+    Le champ `code` identifie le processeur métier (legal, health, mediation, etc.).
+    """
 
     nom = models.CharField(max_length=120, unique=True)
+    code = models.CharField(
+        max_length=40,
+        blank=True,
+        db_index=True,
+        help_text="Identifiant du processeur métier (legal, health, mediation, training, communication). Vide = processeur générique.",
+    )
     description = models.TextField(blank=True)
     chef_de_pole = models.ForeignKey(
         User,
@@ -329,6 +338,8 @@ class Requete(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     numero_reference = models.CharField(max_length=20, unique=True, editable=False)
+    date_cloture = models.DateField(null=True, blank=True)
+    compte_rendu = models.TextField(blank=True)
 
     class Meta:
         verbose_name = "Requête"
@@ -560,6 +571,44 @@ class PoleMembership(models.Model):
         return f"{self.user} – {self.pole.nom} (manager={self.is_manager})"
 
 
+class PoleWorkflow(models.Model):
+    """
+    Configuration des transitions de statut autorisées par pôle (optionnel).
+    Si des lignes existent pour un pôle, seules ces transitions sont autorisées.
+    Sinon, le processeur utilise sa logique par défaut.
+    """
+
+    pole = models.ForeignKey(
+        Pole,
+        on_delete=models.CASCADE,
+        related_name="workflow_transitions",
+        db_index=True,
+    )
+    from_status = models.CharField(max_length=30, db_index=True)
+    to_status = models.CharField(max_length=30, db_index=True)
+    action_id = models.CharField(max_length=60, blank=True)
+    label = models.CharField(max_length=120, blank=True)
+    ordre = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Transition de workflow (pôle)"
+        verbose_name_plural = "Transitions de workflow (pôle)"
+        ordering = ["pole", "ordre", "from_status", "to_status"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["pole", "from_status", "to_status"],
+                name="unique_pole_workflow_transition",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["pole", "from_status", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.pole.nom}: {self.from_status} → {self.to_status}"
+
+
 class Reunion(models.Model):
     """Réunion liée à un dossier."""
 
@@ -616,6 +665,56 @@ class RequeteMessage(models.Model):
 
     def __str__(self) -> str:
         return f"{self.requete.numero_reference} - {self.utilisateur}"
+
+
+class TypeActiviteRequete(models.TextChoices):
+    CALL = "call", "Appel téléphonique"
+    MEETING = "meeting", "Rendez-vous"
+    DOCUMENT = "document", "Document à fournir"
+    NOTE = "note", "Note interne"
+
+
+class StatutActiviteRequete(models.TextChoices):
+    PLANNED = "planned", "Planifié"
+    COMPLETED = "completed", "Terminé"
+    CANCELLED = "cancelled", "Annulé"
+
+
+class ActiviteRequete(models.Model):
+    """Activité planifiée sur une requête (date choisie dans le suivi d'activités). Affichee dans le calendrier."""
+
+    requete = models.ForeignKey(
+        Requete, on_delete=models.CASCADE, related_name="activites", db_index=True
+    )
+    type_activite = models.CharField(
+        max_length=20, choices=TypeActiviteRequete.choices
+    )
+    titre = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    date_planifiee = models.DateTimeField()
+    statut = models.CharField(
+        max_length=20,
+        choices=StatutActiviteRequete.choices,
+        default=StatutActiviteRequete.PLANNED,
+    )
+    date_realisation = models.DateTimeField(null=True, blank=True)
+    commentaire = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="activites_requetes_creees",
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Activité requête"
+        verbose_name_plural = "Activités requête"
+        ordering = ["-date_planifiee"]
+        indexes = [models.Index(fields=["requete", "date_planifiee"])]
+
+    def __str__(self) -> str:
+        return f"{self.requete.numero_reference} - {self.titre}"
 
 
 class InteractionRH(models.Model):
@@ -853,8 +952,12 @@ class HistoriqueAction(models.Model):
         commentaire: str | None = None,
     ) -> "HistoriqueAction":
         """Crée une entrée d'historique simplifiée."""
+        from django.contrib.contenttypes.models import ContentType
+
+        ct = ContentType.objects.get_for_model(content_object)
         return cls.objects.create(
-            content_object=content_object,
+            content_type=ct,
+            object_id=content_object.pk,
             utilisateur=utilisateur,
             action=action,
             champ_modifie=champ_modifie,
@@ -862,6 +965,26 @@ class HistoriqueAction(models.Model):
             nouvelle_valeur=nouvelle_valeur,
             commentaire=commentaire,
         )
+
+
+class MaquetteCompteRendu(models.Model):
+    """Maquette (modèle) de compte rendu de clôture pour les requêtes."""
+
+    nom = models.CharField(max_length=200)
+    contenu = models.TextField(
+        help_text="Texte de la maquette avec éventuels repères : [REFERENCE], [DATE], [TITRE], etc."
+    )
+    is_default = models.BooleanField(default=False)
+    ordre = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Maquette de compte rendu"
+        verbose_name_plural = "Maquettes de compte rendu"
+        ordering = ["ordre", "nom"]
+
+    def __str__(self) -> str:
+        return self.nom
 
 
 # Signals recommandés:

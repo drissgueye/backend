@@ -11,10 +11,12 @@ from .models import (
     Entreprise,
     HistoriqueAction,
     InteractionRH,
+    MaquetteCompteRendu,
     Notification,
     PieceJointe,
     Pole,
     PoleMembre,
+    PoleWorkflow,
     ProfilUtilisateur,
     Requete,
     RequeteMessage,
@@ -31,8 +33,17 @@ class EntrepriseAdmin(admin.ModelAdmin):
 
 @admin.register(Pole)
 class PoleAdmin(admin.ModelAdmin):
-    search_fields = ["nom"]
-    list_display = ["nom", "chef_de_pole"]
+    search_fields = ["nom", "code"]
+    list_display = ["nom", "code", "chef_de_pole"]
+    list_editable = ["code"]
+
+
+@admin.register(PoleWorkflow)
+class PoleWorkflowAdmin(admin.ModelAdmin):
+    list_display = ["pole", "from_status", "to_status", "action_id", "label", "ordre", "is_active"]
+    list_filter = ["pole", "is_active"]
+    list_editable = ["ordre", "is_active"]
+    ordering = ["pole", "ordre", "from_status"]
 
 
 @admin.register(Requete)
@@ -227,3 +238,11 @@ class NotificationAdmin(admin.ModelAdmin):
     list_filter = ["type_notification", "is_read", "created_at"]
     search_fields = ["titre", "message"]
     autocomplete_fields = ["utilisateur", "requete"]
+
+
+@admin.register(MaquetteCompteRendu)
+class MaquetteCompteRenduAdmin(admin.ModelAdmin):
+    list_display = ["nom", "is_default", "ordre", "created_at"]
+    list_filter = ["is_default"]
+    ordering = ["ordre", "nom"]
+    search_fields = ["nom"]

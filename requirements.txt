@@ -1,0 +1,5 @@
+# Dépendances du projet backendCnts
+# Installer avec : pip install -r requirements.txt
+
+# Export PDF du compte rendu de clôture
+reportlab>=4.0.0

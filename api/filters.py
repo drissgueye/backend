@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import django_filters
 
-from requetes.models import Dossier, Notification, PieceJointe, Requete, Reunion
+from requetes.models import Dossier, MaquetteCompteRendu, Notification, PieceJointe, Requete, Reunion
 
 
 class RequeteFilter(django_filters.FilterSet):
@@ -43,3 +43,9 @@ class NotificationFilter(django_filters.FilterSet):
     class Meta:
         model = Notification
         fields = ["type_notification", "is_read", "created_at"]
+
+
+class MaquetteCompteRenduFilter(django_filters.FilterSet):
+    class Meta:
+        model = MaquetteCompteRendu
+        fields = ["is_default"]

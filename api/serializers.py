@@ -8,10 +8,13 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from requetes.models import (
+    ActiviteRequete,
     DelegueSyndical,
     Dossier,
     Entreprise,
+    HistoriqueAction,
     DocumentSyndical,
+    MaquetteCompteRendu,
     Notification,
     Pole,
     PoleMembre,
@@ -19,6 +22,7 @@ from requetes.models import (
     PieceJointe,
     ProfilUtilisateur,
     Requete,
+    RequeteMessage,
     Reunion,
 )
 
@@ -113,6 +117,7 @@ class PoleMembreSerializer(serializers.ModelSerializer):
     user_id = serializers.PrimaryKeyRelatedField(
         source="user", queryset=User.objects.all(), write_only=True
     )
+    user_id_read = serializers.IntegerField(source="user.id", read_only=True)
     user_first_name = serializers.CharField(source="user.first_name", read_only=True)
     user_last_name = serializers.CharField(source="user.last_name", read_only=True)
     user_email = serializers.CharField(source="user.email", read_only=True)
@@ -123,13 +128,14 @@ class PoleMembreSerializer(serializers.ModelSerializer):
             "id",
             "pole",
             "user_id",
+            "user_id_read",
             "user_first_name",
             "user_last_name",
             "user_email",
             "role",
             "created_at",
         ]
-        read_only_fields = ["id", "pole", "created_at", "user_first_name", "user_last_name", "user_email"]
+        read_only_fields = ["id", "pole", "created_at", "user_id_read", "user_first_name", "user_last_name", "user_email"]
 
 
 class ProfilUtilisateurSerializer(serializers.ModelSerializer):
@@ -354,13 +360,80 @@ class PieceJointeSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class HistoriqueActionSerializer(serializers.ModelSerializer):
+    """Lecture seule : historique des actions sur un objet (ex. requête)."""
+
+    action_display = serializers.SerializerMethodField()
+    utilisateur_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HistoriqueAction
+        fields = [
+            "id",
+            "action",
+            "action_display",
+            "utilisateur_display",
+            "commentaire",
+            "champ_modifie",
+            "ancienne_valeur",
+            "nouvelle_valeur",
+            "timestamp",
+        ]
+        read_only_fields = fields
+
+    def get_action_display(self, obj: HistoriqueAction) -> str:
+        return obj.get_action_display()
+
+    def get_utilisateur_display(self, obj: HistoriqueAction) -> str:
+        name = obj.utilisateur.get_full_name() if obj.utilisateur else ""
+        return name.strip() or (getattr(obj.utilisateur, "username", "") or "")
+
+
+class RequeteMessageSerializer(serializers.ModelSerializer):
+    """Lecture des messages d'une requête (dont demandes d'information)."""
+
+    auteur = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = RequeteMessage
+        fields = ["id", "contenu", "is_interne", "created_at", "auteur"]
+
+    def get_auteur(self, obj: RequeteMessage) -> str:
+        user = getattr(obj, "utilisateur", None)
+        if not user:
+            return ""
+        profil = getattr(user, "profil", None)
+        if profil and (getattr(profil, "prenom", "") or getattr(profil, "nom", "")):
+            parts = [getattr(profil, "prenom", "") or "", getattr(profil, "nom", "") or ""]
+            return " ".join(p for p in parts if p).strip()
+        return getattr(user, "get_full_name", lambda: "")() or getattr(user, "username", "") or ""
+
+
+class MaquetteCompteRenduSerializer(serializers.ModelSerializer):
+    """Lecture des maquettes de compte rendu."""
+
+    class Meta:
+        model = MaquetteCompteRendu
+        fields = ["id", "nom", "contenu", "is_default", "ordre", "created_at"]
+
+
+class RequeteMessageCreateSerializer(serializers.ModelSerializer):
+    """Création d'un message (réponse au besoin d'info, etc.)."""
+
+    contenu = serializers.CharField(required=True, allow_blank=False)
+
+    class Meta:
+        model = RequeteMessage
+        fields = ["contenu", "is_interne"]
+
+
 class RequeteSerializer(serializers.ModelSerializer):
     """Serializer Requete avec relations."""
 
     travailleur_id = serializers.PrimaryKeyRelatedField(
         source="travailleur", queryset=User.objects.all(), write_only=True
     )
-    travailleur = serializers.StringRelatedField(read_only=True)
+    travailleur = serializers.SerializerMethodField(read_only=True)
     pole_id = serializers.PrimaryKeyRelatedField(
         source="pole", queryset=Pole.objects.all(), write_only=True
     )
@@ -375,6 +448,9 @@ class RequeteSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
         write_only=True,
+    )
+    delegue_syndical_id_read = serializers.IntegerField(
+        source="delegue_syndical_id", read_only=True, allow_null=True
     )
     delegue_syndical = serializers.StringRelatedField(read_only=True)
     dossier_id = serializers.PrimaryKeyRelatedField(
@@ -396,6 +472,7 @@ class RequeteSerializer(serializers.ModelSerializer):
             "description",
             "delegue_syndical",
             "delegue_syndical_id",
+            "delegue_syndical_id_read",
             "entreprise",
             "entreprise_id",
             "dossier",
@@ -404,13 +481,39 @@ class RequeteSerializer(serializers.ModelSerializer):
             "priorite",
             "created_at",
             "updated_at",
+            "date_cloture",
+            "compte_rendu",
         ]
         read_only_fields = ["id", "numero_reference", "created_at", "updated_at"]
+
+    def get_travailleur(self, obj: Requete) -> str | None:
+        """Nom affichable du demandeur : profil (prénom nom), sinon get_full_name(), sinon username."""
+        user = getattr(obj, "travailleur", None)
+        if not user:
+            return None
+        profil = getattr(user, "profil", None)
+        if profil and (getattr(profil, "prenom", "") or getattr(profil, "nom", "")):
+            parts = [getattr(profil, "prenom", "") or "", getattr(profil, "nom", "") or ""]
+            return " ".join(p for p in parts if p).strip() or None
+        full = getattr(user, "get_full_name", lambda: "")()
+        if full and full.strip():
+            return full.strip()
+        return getattr(user, "username", "") or None
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         from api.permissions import _get_role
 
         request = self.context.get("request")
+        # Accepter "pole" (id) en plus de "pole_id" pour la classification (frontend peut envoyer l'un ou l'autre)
+        if request and getattr(request, "data", None):
+            data = request.data
+            if "pole" in data and "pole" not in attrs:
+                try:
+                    pid = data["pole"]
+                    if pid is not None and pid != "":
+                        attrs["pole"] = Pole.objects.get(pk=int(pid))
+                except (TypeError, ValueError, Pole.DoesNotExist):
+                    pass
         if request and "travailleur" in attrs:
             role = _get_role(request.user)
             if role not in ("admin", "delegate") and attrs["travailleur"] != request.user:
@@ -434,12 +537,23 @@ class RequeteSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError(
                         {"entreprise_id": "Vous ne pouvez créer une requête que pour votre entreprise."}
                     )
-        entreprise = attrs.get("entreprise") or getattr(self.instance, "entreprise", None)
-        delegue = attrs.get("delegue_syndical") or getattr(self.instance, "delegue_syndical", None)
-        if delegue and entreprise and delegue.entreprise_id != entreprise.id:
-            raise serializers.ValidationError(
-                {"delegue_syndical": "Le délégué ne correspond pas à l'entreprise."}
-            )
+        # Ne valider délégué/entreprise que si l'un des deux est modifié (évite 400 en PATCH classification seule)
+        if "entreprise" in attrs or "delegue_syndical" in attrs:
+            entreprise = attrs.get("entreprise") or (self.instance and getattr(self.instance, "entreprise", None))
+            delegue = attrs.get("delegue_syndical") or (self.instance and getattr(self.instance, "delegue_syndical", None))
+            if delegue and entreprise and delegue.entreprise_id != entreprise.id:
+                raise serializers.ValidationError(
+                    {"delegue_syndical": "Le délégué ne correspond pas à l'entreprise."}
+                )
+        pole = attrs.get("pole") or (self.instance and getattr(self.instance, "pole", None))
+        type_probleme = attrs.get("type_probleme") or (self.instance and getattr(self.instance, "type_probleme", None))
+        types_problemes = getattr(pole, "types_problemes", None) if pole else None
+        # Optionnel : restreindre le type au pôle. Désactivé pour permettre l'enregistrement même si le front
+        # n'utilise pas encore /api/type-probleme-choices/?pole=<id>. Réactiver en décommentant le bloc ci-dessous.
+        # if pole and type_probleme and types_problemes and type_probleme not in types_problemes:
+        #     from requetes.models import TypeProbleme
+        #     allowed_labels = [dict(TypeProbleme.choices).get(v, v) for v in types_problemes]
+        #     raise serializers.ValidationError({"type_probleme": "…", "allowed_types": types_problemes})
         return attrs
 
 
@@ -534,6 +648,38 @@ class ReunionSerializer(serializers.ModelSerializer):
         if type_reunion == "TELEPHONIQUE" and lieu:
             raise serializers.ValidationError({"lieu": "Le lieu doit être vide pour une réunion téléphonique."})
         return attrs
+
+
+class ActiviteRequeteSerializer(serializers.ModelSerializer):
+    """Serializer pour les activités planifiées sur une requête (suivi d'activités, calendrier)."""
+
+    requete_id = serializers.PrimaryKeyRelatedField(
+        source="requete", queryset=Requete.objects.all(), write_only=True
+    )
+    requete = serializers.StringRelatedField(read_only=True)
+    created_by_id = serializers.PrimaryKeyRelatedField(
+        source="created_by", queryset=User.objects.all(), write_only=True, required=False
+    )
+    created_by = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = ActiviteRequete
+        fields = [
+            "id",
+            "requete",
+            "requete_id",
+            "type_activite",
+            "titre",
+            "description",
+            "date_planifiee",
+            "statut",
+            "date_realisation",
+            "commentaire",
+            "created_by",
+            "created_by_id",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
 
 
 class NotificationSerializer(serializers.ModelSerializer):
