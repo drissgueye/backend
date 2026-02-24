@@ -149,6 +149,15 @@ def piece_jointe_upload_to(instance: PieceJointe, filename: str) -> str:
     return timezone.now().strftime(f"pieces_jointes/%Y/%m/{filename}")
 
 
+def activite_compte_rendu_upload_to(instance: "ActiviteRequete", filename: str) -> str:
+    """Chemin pour la pièce jointe du compte rendu d'une activité."""
+    req_id = getattr(instance.requete_id, "pk", None) or instance.requete_id
+    act_id = instance.pk or "new"
+    return timezone.now().strftime(
+        f"activites_compte_rendu/%Y/%m/req_{req_id}_act_{act_id}_{filename}"
+    )
+
+
 class Entreprise(models.Model):
     """Représente une entreprise liée à des requêtes syndicales."""
 
@@ -686,9 +695,7 @@ class ActiviteRequete(models.Model):
     requete = models.ForeignKey(
         Requete, on_delete=models.CASCADE, related_name="activites", db_index=True
     )
-    type_activite = models.CharField(
-        max_length=20, choices=TypeActiviteRequete.choices
-    )
+    type_activite = models.CharField(max_length=50)
     titre = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     date_planifiee = models.DateTimeField()
@@ -699,6 +706,13 @@ class ActiviteRequete(models.Model):
     )
     date_realisation = models.DateTimeField(null=True, blank=True)
     commentaire = models.TextField(blank=True)
+    piece_jointe_compte_rendu = models.FileField(
+        upload_to=activite_compte_rendu_upload_to,
+        null=True,
+        blank=True,
+        verbose_name="Pièce jointe compte rendu",
+    )
+    extra_data = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
@@ -712,6 +726,22 @@ class ActiviteRequete(models.Model):
         verbose_name_plural = "Activités requête"
         ordering = ["-date_planifiee"]
         indexes = [models.Index(fields=["requete", "date_planifiee"])]
+
+    def get_type_activite_display(self) -> str:
+        """Libellé du type d'activité selon le pôle (activity_types_by_pole)."""
+        from requetes.activity_types_by_pole import (
+            get_activity_types_for_pole,
+            get_pole_activity_code,
+        )
+        pole = getattr(self.requete, "pole", None)
+        if not pole:
+            code = "generic"
+        else:
+            code = get_pole_activity_code(pole)
+        for t in get_activity_types_for_pole(code):
+            if t.get("value") == self.type_activite:
+                return t.get("label", self.type_activite)
+        return self.type_activite
 
     def __str__(self) -> str:
         return f"{self.requete.numero_reference} - {self.titre}"
@@ -804,6 +834,16 @@ class CommunicationPieceJointe(models.Model):
         return f"{self.communication.titre} - {self.uploaded_by}"
 
 
+class CategorieDocument(models.TextChoices):
+    """Catégories de documents syndicaux (affichage et filtrage)."""
+
+    ADMINISTRATIFS_OFFICIELS = "administratifs_officiels", "Documents administratifs officiels"
+    DOCUMENTS_MEMBRES = "documents_membres", "Documents des membres"
+    DOCUMENTS_POLES = "documents_poles", "Documents liés aux pôles"
+    COMMUNICATION = "communication", "Documents de communication"
+    JURIDIQUES_CONTENTIEUX = "juridiques_contentieux", "Documents juridiques et contentieux"
+
+
 class DocumentSyndical(models.Model):
     """Document interne du syndicat."""
 
@@ -818,7 +858,12 @@ class DocumentSyndical(models.Model):
         db_index=True,
     )
     annee = models.PositiveIntegerField()
-    categorie = models.CharField(max_length=120)
+    categorie = models.CharField(
+        max_length=120,
+        choices=CategorieDocument.choices,
+        default=CategorieDocument.ADMINISTRATIFS_OFFICIELS,
+        blank=True,
+    )
     fichier = models.FileField(upload_to=piece_jointe_upload_to)
     version = models.PositiveIntegerField(default=1)
     uploaded_by = models.ForeignKey(

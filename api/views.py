@@ -39,6 +39,10 @@ from requetes.models import (
     Reunion,
     TypeProbleme,
 )
+from requetes.activity_types_by_pole import (
+    get_activity_types_for_pole,
+    get_pole_activity_code,
+)
 from requetes.services.pole_processors import (
     get_pole_processor,
     PoleProcessorActionNotAllowedError,
@@ -94,10 +98,14 @@ User = get_user_model()
 def _get_role(user: User) -> str | None:
     if getattr(user, "is_superuser", False) or getattr(user, "is_staff", False):
         return "admin"
+    if not getattr(user, "is_authenticated", True) or not user:
+        return None
+    if getattr(user, "pk", None) and DelegueSyndical.objects.filter(user=user, is_active=True).exists():
+        return "delegate"
     profil = getattr(user, "profil", None)
     if isinstance(profil, ProfilUtilisateur):
-        return profil.role
-    return None
+        return profil.role or "member"
+    return "member"
 
 
 def _user_pole_ids(user: User) -> list[int]:
@@ -569,6 +577,15 @@ class RequeteViewSet(BaseModelViewSet):
     def perform_create(self, serializer):
         with transaction.atomic():
             requete = serializer.save()
+            if not requete.dossier_id and requete.pole_id:
+                dossier = Dossier.objects.create(
+                    pole=requete.pole,
+                    titre=f"Dossier - {requete.pole.nom} - {requete.numero_reference}",
+                    responsable=self.request.user,
+                )
+                dossier.requetes.add(requete)
+                requete.dossier = dossier
+                requete.save(update_fields=["dossier"])
             HistoriqueAction.enregistrer_action(
                 content_object=requete,
                 utilisateur=self.request.user,
@@ -734,6 +751,30 @@ class RequeteViewSet(BaseModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=["get"], url_path="activity-type-choices")
+    def activity_type_choices(self, request, pk=None):
+        """
+        Retourne les types d'activité et les champs associés pour le pôle de cette requête.
+        À utiliser dans le formulaire « Ajouter une activité » pour afficher les types
+        et champs dynamiques selon le pôle.
+        """
+        requete = self.get_object()
+        pole = getattr(requete, "pole", None)
+        if not pole:
+            types_list = get_activity_types_for_pole("generic")
+            return Response({
+                "pole_code": "generic",
+                "pole_name": None,
+                "types": types_list,
+            })
+        pole_code = get_pole_activity_code(pole)
+        types_list = get_activity_types_for_pole(pole_code)
+        return Response({
+            "pole_code": pole_code,
+            "pole_name": pole.nom,
+            "types": types_list,
+        })
+
     @action(detail=True, methods=["get"], url_path="historique")
     def historique(self, request, pk=None):
         """Liste l'historique des actions (HistoriqueAction) pour cette requête."""
@@ -760,10 +801,49 @@ class RequeteViewSet(BaseModelViewSet):
         data = request.data.copy()
         data.setdefault("requete_id", requete.pk)
         data.setdefault("created_by_id", request.user.pk)
-        serializer = ActiviteRequeteSerializer(data=data)
+        serializer = ActiviteRequeteSerializer(
+            data=data, context={"requete": requete}
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save(requete=requete, created_by=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(
+        detail=True,
+        methods=["get", "patch", "put"],
+        url_path=r"activites/(?P<activite_id>\d+)",
+    )
+    def activite_detail(self, request, pk=None, activite_id=None):
+        """
+        Récupère ou met à jour une activité de la requête (statut, date_realisation, commentaire).
+        Permet de persister « Marquer comme terminée » et « Annuler » depuis le front.
+        """
+        requete = self.get_object()
+        activite = ActiviteRequete.objects.filter(
+            requete=requete, pk=activite_id
+        ).select_related("created_by").first()
+        if not activite:
+            return Response(
+                {"detail": "Activité introuvable ou n'appartient pas à cette requête."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if request.method == "GET":
+            serializer = ActiviteRequeteSerializer(activite, context={"request": request})
+            return Response(serializer.data)
+        # PATCH / PUT : mise à jour partielle (statut, date_realisation, commentaire, pièce jointe)
+        allowed = {"statut", "date_realisation", "commentaire", "piece_jointe_compte_rendu"}
+        data = {k: v for k, v in request.data.items() if k in allowed}
+        if request.FILES and "piece_jointe_compte_rendu" in request.FILES:
+            data["piece_jointe_compte_rendu"] = request.FILES["piece_jointe_compte_rendu"]
+        serializer = ActiviteRequeteSerializer(
+            activite, data=data, partial=True, context={"requete": requete, "request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            ActiviteRequeteSerializer(activite, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["get", "post"], url_path="messages")
     def messages(self, request, pk=None):
@@ -1052,6 +1132,11 @@ class ReunionViewSet(BaseModelViewSet):
     search_fields = ["ordre_du_jour", "compte_rendu"]
     ordering_fields = ["date_heure", "statut"]
 
+    def get_permissions(self):
+        if self.action == "calendar_events":
+            return [IsAuthenticated()]
+        return super().get_permissions()
+
     @action(detail=False, methods=["get"], url_path="calendar-events")
     def calendar_events(self, request):
         """
@@ -1111,7 +1196,7 @@ class ReunionViewSet(BaseModelViewSet):
                     "reunion_id": r.id,
                 })
 
-        # Activités des requêtes (programmées lors du traitement des requêtes par les pôles)
+        # Activités des requêtes (même visibilité que la liste des requêtes + requêtes où l'utilisateur a créé une activité)
         requete_ids = []
         if event_type_filter != "reunion":
             try:
@@ -1139,7 +1224,17 @@ class ReunionViewSet(BaseModelViewSet):
                     else:
                         req_qs = req_qs.filter(travailleur=request.user)
                 requete_ids = list(req_qs.values_list("id", flat=True))
-                if requete_ids:
+                # Inclure aussi les requêtes pour lesquelles l'utilisateur a créé au moins une activité (pour le calendrier)
+                if request.user and getattr(request.user, "pk", None):
+                    extra_ids = list(
+                        ActiviteRequete.objects.filter(created_by=request.user)
+                        .values_list("requete_id", flat=True)
+                        .distinct()
+                    )
+                    for rid in extra_ids:
+                        if rid not in requete_ids:
+                            requete_ids.append(rid)
+                if requete_ids and start_dt and end_dt:
                     activites = ActiviteRequete.objects.filter(
                         requete_id__in=requete_ids,
                         date_planifiee__gte=start_dt,
@@ -1147,23 +1242,42 @@ class ReunionViewSet(BaseModelViewSet):
                         statut__in=["planned", "completed"],
                     ).select_related("requete", "created_by").order_by("date_planifiee")
                     for a in activites:
-                        start = a.date_planifiee
-                        end = start + timedelta(hours=1)
-                        events.append({
-                            "id": f"activite-{a.id}",
-                            "event_type": "activite",
-                            "title": a.titre,
-                            "start": start.isoformat(),
-                            "end": end.isoformat(),
-                            "type_activite": a.type_activite,
-                            "type_activite_display": a.get_type_activite_display(),
-                            "statut": a.statut,
-                            "statut_display": a.get_statut_display(),
-                            "requete_id": a.requete_id,
-                            "numero_reference": a.requete.numero_reference,
-                            "description": a.description or "",
-                            "activite_id": a.id,
-                        })
+                        try:
+                            start = a.date_planifiee
+                            if django_tz.is_naive(start):
+                                start = django_tz.make_aware(start, django_tz.utc)
+                            else:
+                                start = django_tz.localtime(start, django_tz.utc)
+                            end = start + timedelta(hours=1)
+                            type_display = getattr(
+                                a, "get_type_activite_display", lambda: a.type_activite or ""
+                            )()
+                            statut_display = getattr(
+                                a, "get_statut_display", lambda: a.statut or ""
+                            )()
+                            # Même format ISO UTC que GET /requetes/<id>/activites/ pour dates/heures précises
+                            start_iso = start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                            end_iso = end.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                            events.append({
+                                "id": f"activite-{a.id}",
+                                "event_type": "activite",
+                                "title": a.titre or "",
+                                "start": start_iso,
+                                "end": end_iso,
+                                "type_activite": a.type_activite,
+                                "type_activite_display": type_display,
+                                "statut": a.statut,
+                                "statut_display": statut_display,
+                                "requete_id": a.requete_id,
+                                "numero_reference": (getattr(a.requete, "numero_reference", None) or "") if getattr(a, "requete", None) else "",
+                                "description": a.description or "",
+                                "activite_id": a.id,
+                            })
+                        except Exception as e_act:
+                            import logging
+                            logging.getLogger(__name__).warning(
+                                "Calendrier: activité id=%s ignorée: %s", a.id, e_act
+                            )
             except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)
@@ -1175,20 +1289,26 @@ class ReunionViewSet(BaseModelViewSet):
                 else:
                     logger.exception("Calendrier: erreur chargement activités requêtes")
         events.sort(key=lambda e: e["start"])
-        resp = Response(events)
         if request.query_params.get("debug") == "1":
             try:
                 n_activites_total = ActiviteRequete.objects.count()
                 n_reunions = sum(1 for e in events if e.get("event_type") == "reunion")
                 n_activites = sum(1 for e in events if e.get("event_type") == "activite")
-                resp["X-Calendar-Debug"] = (
-                    f"requetes_vues={len(requete_ids)}; "
-                    f"activites_en_base={n_activites_total}; "
-                    f"reunions={n_reunions}; activites_retournees={n_activites}"
-                )
+                debug_payload = {
+                    "events": events,
+                    "debug": {
+                        "requetes_vues": len(requete_ids),
+                        "activites_en_base": n_activites_total,
+                        "reunions_retournees": n_reunions,
+                        "activites_retournees": n_activites,
+                        "start_dt": start_dt.isoformat() if start_dt else None,
+                        "end_dt": end_dt.isoformat() if end_dt else None,
+                    },
+                }
+                return Response(debug_payload)
             except Exception:
                 pass
-        return resp
+        return Response(events)
 
     def get_queryset(self):
         role = _get_role(self.request.user)
@@ -1217,6 +1337,11 @@ class DocumentSyndicalViewSet(BaseModelViewSet):
     permission_classes = [IsAuthenticatedAndHasRole]
     search_fields = ["nom", "categorie", "description"]
     ordering_fields = ["annee", "created_at"]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return super().get_permissions()
 
     def get_queryset(self):
         role = _get_role(self.request.user)

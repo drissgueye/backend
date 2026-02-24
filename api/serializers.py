@@ -661,6 +661,7 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
         source="created_by", queryset=User.objects.all(), write_only=True, required=False
     )
     created_by = serializers.StringRelatedField(read_only=True)
+    type_activite_display = serializers.SerializerMethodField()
 
     class Meta:
         model = ActiviteRequete
@@ -669,17 +670,52 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
             "requete",
             "requete_id",
             "type_activite",
+            "type_activite_display",
             "titre",
             "description",
             "date_planifiee",
             "statut",
             "date_realisation",
             "commentaire",
+            "piece_jointe_compte_rendu",
+            "extra_data",
             "created_by",
             "created_by_id",
             "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "type_activite_display"]
+        extra_kwargs = {
+            "piece_jointe_compte_rendu": {"use_url": False},
+        }
+
+    def get_type_activite_display(self, obj):
+        return obj.get_type_activite_display()
+
+    def validate(self, attrs):
+        from requetes.activity_types_by_pole import (
+            get_activity_types_for_pole,
+            get_pole_activity_code,
+            is_valid_activity_type_for_pole,
+        )
+        requete = self.context.get("requete") or (self.instance.requete if self.instance else None)
+        type_activite = attrs.get("type_activite")
+        if type_activite is None and self.instance:
+            type_activite = self.instance.type_activite
+        if requete and type_activite is not None:
+            pole = getattr(requete, "pole", None)
+            pole_code = get_pole_activity_code(pole) if pole else "generic"
+            if not is_valid_activity_type_for_pole(pole_code, type_activite):
+                allowed = get_activity_types_for_pole(pole_code)
+                allowed_values = [t["value"] for t in allowed]
+                raise serializers.ValidationError({
+                    "type_activite": [
+                        f"Type d'activité non autorisé pour ce pôle. Valeurs attendues : {allowed_values}"
+                    ]
+                })
+        extra_data = attrs.get("extra_data")
+        if extra_data is not None and not isinstance(extra_data, dict):
+            raise serializers.ValidationError({"extra_data": "Doit être un objet (clé-valeur)."})
+        return attrs
 
 
 class NotificationSerializer(serializers.ModelSerializer):
