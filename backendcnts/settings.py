@@ -182,6 +182,10 @@ INSTALLED_APPS = [
 
 
 
+    'documents',
+
+
+
 ]
 
 

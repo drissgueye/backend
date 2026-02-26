@@ -5,6 +5,7 @@ from typing import Any
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth import get_user_model
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models import Q
 from django.urls import reverse
@@ -158,6 +159,18 @@ def activite_compte_rendu_upload_to(instance: "ActiviteRequete", filename: str) 
     )
 
 
+class CritereNotation(models.TextChoices):
+    """Critères de notation des entreprises (employeurs)."""
+
+    DIALOGUE_SOCIAL = "dialogue_social", "Dialogue social"
+    RESPECT_ACCORDS = "respect_accords", "Respect des accords et conformité"
+    CONDITIONS_TRAVAIL = "conditions_travail", "Conditions de travail"
+    REMUNERATION = "remuneration", "Rémunération et avantages"
+    FORMATION = "formation", "Formation et évolution"
+    SANTE_SECURITE = "sante_securite", "Santé et sécurité au travail"
+    RELATION_SYNDICAT = "relation_syndicat", "Relation avec le syndicat"
+
+
 class Entreprise(models.Model):
     """Représente une entreprise liée à des requêtes syndicales."""
 
@@ -172,6 +185,50 @@ class Entreprise(models.Model):
 
     def __str__(self) -> str:
         return self.nom
+
+
+class NotationEntreprise(models.Model):
+    """
+    Notation d'une entreprise sur un critère par un utilisateur.
+    Une seule note par (entreprise, critère, utilisateur) ; mise à jour si re-soumission.
+    """
+
+    entreprise = models.ForeignKey(
+        Entreprise,
+        on_delete=models.CASCADE,
+        related_name="notations",
+        db_index=True,
+    )
+    critere = models.CharField(
+        max_length=40,
+        choices=CritereNotation.choices,
+        db_index=True,
+    )
+    note = models.PositiveSmallIntegerField(
+        help_text="Note de 1 à 5 (1 = très insuffisant, 5 = excellent)",
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    commentaire = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="notations_entreprise",
+        db_index=True,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Notation entreprise"
+        verbose_name_plural = "Notations entreprises"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entreprise", "critere", "created_by"],
+                name="notation_entreprise_unique_user_critere",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.entreprise.nom} — {self.get_critere_display()}: {self.note}/5"
 
 
 class Pole(models.Model):

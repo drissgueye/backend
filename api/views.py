@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 from typing import Any
 
@@ -12,22 +13,29 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from drf_spectacular.utils import OpenApiExample, extend_schema
 
+from django.core.files.storage import default_storage
+from django.utils import timezone
+from django.utils.text import get_valid_filename
 from requetes.models import (
     ActionHistorique,
     ActiviteRequete,
+    CommunicationPieceJointe,
+    CommunicationPost,
     Dossier,
     DelegueSyndical,
     Entreprise,
     DocumentSyndical,
     HistoriqueAction,
     MaquetteCompteRendu,
+    NotationEntreprise,
     Notification,
     PoleMembre,
     PoleMembership,
@@ -72,11 +80,13 @@ from .permissions import (
 from .serializers import (
     ActiviteRequeteSerializer,
     AdminUserCreateSerializer,
+    CommunicationPostSerializer,
     DossierSerializer,
     DelegueSyndicalSerializer,
     DocumentSyndicalSerializer,
     EntrepriseSerializer,
     HistoriqueActionSerializer,
+    NotationEntrepriseSerializer,
     NotificationSerializer,
     PoleMembreSerializer,
     PoleMembershipSerializer,
@@ -218,6 +228,37 @@ class EntrepriseViewSet(BaseModelViewSet):
         if getattr(self, "action", None) in ["list", "retrieve"]:
             return [AllowAny()]
         return super().get_permissions()
+
+
+class NotationEntrepriseViewSet(viewsets.ModelViewSet):
+    """Notations des entreprises par critères. Liste filtrable par entreprise ; création = upsert (user + entreprise + critère)."""
+
+    serializer_class = NotationEntrepriseSerializer
+    permission_classes = [IsAuthenticatedAndHasRole]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ["entreprise", "critere"]
+    ordering_fields = ["updated_at", "entreprise", "critere"]
+
+    def get_queryset(self):
+        return (
+            NotationEntreprise.objects.all()
+            .select_related("entreprise", "created_by")
+            .order_by("entreprise__nom", "critere")
+        )
+
+    def perform_create(self, serializer):
+        data = serializer.validated_data
+        entreprise = data["entreprise_id"]
+        critere = data["critere"]
+        note = data["note"]
+        commentaire = data.get("commentaire", "")
+        obj, created = NotationEntreprise.objects.update_or_create(
+            entreprise=entreprise,
+            critere=critere,
+            created_by=self.request.user,
+            defaults={"note": note, "commentaire": commentaire},
+        )
+        serializer.instance = obj
 
 
 class DelegueSyndicalViewSet(BaseModelViewSet):
@@ -555,7 +596,7 @@ class RequeteViewSet(BaseModelViewSet):
             .select_related("travailleur", "travailleur__profil")
             .all()
         )
-        if role == "admin":
+        if role in ("admin", "super_admin"):
             return qs
         if role == "delegate":
             delegue = DelegueSyndical.objects.filter(user=self.request.user).first()
@@ -830,8 +871,16 @@ class RequeteViewSet(BaseModelViewSet):
         if request.method == "GET":
             serializer = ActiviteRequeteSerializer(activite, context={"request": request})
             return Response(serializer.data)
-        # PATCH / PUT : mise à jour partielle (statut, date_realisation, commentaire, pièce jointe)
-        allowed = {"statut", "date_realisation", "commentaire", "piece_jointe_compte_rendu"}
+        # PATCH / PUT : mise à jour partielle (statut, date_realisation, commentaire, pièce jointe, date_planifiee, titre, description)
+        allowed = {
+            "statut",
+            "date_realisation",
+            "commentaire",
+            "piece_jointe_compte_rendu",
+            "date_planifiee",
+            "titre",
+            "description",
+        }
         data = {k: v for k, v in request.data.items() if k in allowed}
         if request.FILES and "piece_jointe_compte_rendu" in request.FILES:
             data["piece_jointe_compte_rendu"] = request.FILES["piece_jointe_compte_rendu"]
@@ -1202,7 +1251,7 @@ class ReunionViewSet(BaseModelViewSet):
             try:
                 role = _get_role(request.user)
                 req_qs = Requete.objects.all()
-                if role == "admin":
+                if role in ("admin", "super_admin"):
                     pass
                 elif role == "delegate":
                     delegue = DelegueSyndical.objects.filter(user=request.user).first()
@@ -1235,42 +1284,53 @@ class ReunionViewSet(BaseModelViewSet):
                         if rid not in requete_ids:
                             requete_ids.append(rid)
                 if requete_ids and start_dt and end_dt:
+                    # Inclure toutes les activités (planned, completed, cancelled) pour qu'elles apparaissent au calendrier
                     activites = ActiviteRequete.objects.filter(
                         requete_id__in=requete_ids,
                         date_planifiee__gte=start_dt,
                         date_planifiee__lte=end_dt,
-                        statut__in=["planned", "completed"],
                     ).select_related("requete", "created_by").order_by("date_planifiee")
                     for a in activites:
                         try:
                             start = a.date_planifiee
+                            if start is None:
+                                continue
+                            if hasattr(start, "isoformat"):
+                                pass
+                            else:
+                                from django.utils.dateparse import parse_datetime
+                                start = parse_datetime(str(start)) if start else None
+                                if start is None:
+                                    continue
                             if django_tz.is_naive(start):
                                 start = django_tz.make_aware(start, django_tz.utc)
-                            else:
-                                start = django_tz.localtime(start, django_tz.utc)
                             end = start + timedelta(hours=1)
-                            type_display = getattr(
-                                a, "get_type_activite_display", lambda: a.type_activite or ""
-                            )()
-                            statut_display = getattr(
-                                a, "get_statut_display", lambda: a.statut or ""
-                            )()
-                            # Même format ISO UTC que GET /requetes/<id>/activites/ pour dates/heures précises
-                            start_iso = start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-                            end_iso = end.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                            start_iso = start.isoformat().replace("+00:00", "Z") if start.tzinfo else (start.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                            end_iso = end.isoformat().replace("+00:00", "Z") if end.tzinfo else (end.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                            try:
+                                type_display = a.get_type_activite_display()
+                            except Exception:
+                                type_display = getattr(a, "type_activite", "") or ""
+                            try:
+                                statut_display = a.get_statut_display()
+                            except Exception:
+                                statut_display = getattr(a, "statut", "") or ""
+                            numero_ref = ""
+                            if getattr(a, "requete", None) is not None:
+                                numero_ref = getattr(a.requete, "numero_reference", None) or ""
                             events.append({
                                 "id": f"activite-{a.id}",
                                 "event_type": "activite",
-                                "title": a.titre or "",
+                                "title": (a.titre or "")[:500],
                                 "start": start_iso,
                                 "end": end_iso,
-                                "type_activite": a.type_activite,
-                                "type_activite_display": type_display,
-                                "statut": a.statut,
-                                "statut_display": statut_display,
+                                "type_activite": getattr(a, "type_activite", "") or "",
+                                "type_activite_display": type_display or "",
+                                "statut": getattr(a, "statut", "") or "",
+                                "statut_display": statut_display or "",
                                 "requete_id": a.requete_id,
-                                "numero_reference": (getattr(a.requete, "numero_reference", None) or "") if getattr(a, "requete", None) else "",
-                                "description": a.description or "",
+                                "numero_reference": numero_ref,
+                                "description": (a.description or "")[:2000],
                                 "activite_id": a.id,
                             })
                         except Exception as e_act:
@@ -1294,11 +1354,18 @@ class ReunionViewSet(BaseModelViewSet):
                 n_activites_total = ActiviteRequete.objects.count()
                 n_reunions = sum(1 for e in events if e.get("event_type") == "reunion")
                 n_activites = sum(1 for e in events if e.get("event_type") == "activite")
+                n_activites_dans_plage = ActiviteRequete.objects.filter(
+                    requete_id__in=requete_ids,
+                    date_planifiee__gte=start_dt,
+                    date_planifiee__lte=end_dt,
+                ).count() if requete_ids and start_dt and end_dt else 0
                 debug_payload = {
                     "events": events,
                     "debug": {
                         "requetes_vues": len(requete_ids),
+                        "requete_ids_echantillon": list(requete_ids[:30]) if requete_ids else [],
                         "activites_en_base": n_activites_total,
+                        "activites_dans_plage_et_requetes_vues": n_activites_dans_plage,
                         "reunions_retournees": n_reunions,
                         "activites_retournees": n_activites,
                         "start_dt": start_dt.isoformat() if start_dt else None,
@@ -1329,6 +1396,134 @@ class ReunionViewSet(BaseModelViewSet):
                 | Q(dossier__requetes__travailleur=self.request.user)
             ).distinct()
         return qs.filter(dossier__requetes__travailleur=self.request.user).distinct()
+
+
+def _is_communication_pole_member(user) -> bool:
+    """True si l'utilisateur est admin ou membre du pôle Communication (code=communication)."""
+    if _get_role(user) == "admin":
+        return True
+    return Pole.objects.filter(
+        Q(code="communication") & (Q(chef_de_pole=user) | Q(memberships__user=user))
+    ).exists()
+
+
+class CommunicationPostPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 50
+
+
+class CommunicationPostViewSet(viewsets.ModelViewSet):
+    """
+    Publications de communication syndicale. Gérées par le pôle Communication.
+    - Liste : filtrée par visibilité (global = tous ; company = même entreprise ; pole = même pôle), paginée (10 par page).
+    - Création / modification / suppression : réservées aux admins et au pôle Communication.
+    """
+    serializer_class = CommunicationPostSerializer
+    permission_classes = [IsAuthenticatedAndHasRole]
+    pagination_class = CommunicationPostPagination
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ["visibilite", "entreprise_cible", "pole_cible"]
+    search_fields = ["titre", "contenu"]
+    ordering_fields = ["created_at"]
+    ordering = ["-created_at"]
+
+    def get_queryset(self):
+        qs = CommunicationPost.objects.select_related(
+            "auteur", "entreprise_cible", "pole_cible"
+        ).prefetch_related("pieces_jointes").all()
+        user = self.request.user
+        if _get_role(user) == "admin":
+            return qs
+        pole_ids = _user_pole_ids(user)
+        entreprise_id = getattr(
+            getattr(user, "profil", None), "entreprise_id", None
+        )
+        return qs.filter(
+            Q(visibilite="global")
+            | (Q(visibilite="company") & Q(entreprise_cible_id=entreprise_id))
+            | (Q(visibilite="pole") & Q(pole_cible_id__in=pole_ids))
+        ).distinct()
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticatedAndHasRole()]
+        return [IsAuthenticatedAndHasRole(), CommunicationPostEditPermission()]
+
+    def perform_create(self, serializer):
+        serializer.save(auteur=self.request.user)
+
+    @action(detail=False, methods=["get"])
+    def can_manage(self, request):
+        """Indique si l'utilisateur connecté peut créer/modifier/supprimer des communications."""
+        return Response({"can_manage": _is_communication_pole_member(request.user)})
+
+    @action(detail=False, methods=["post"], url_path="upload-inline-image")
+    def upload_inline_image(self, request):
+        """
+        Upload une image pour l'insérer dans le contenu (éditeur riche).
+        Accepte un fichier image, le enregistre et retourne l'URL publique.
+        """
+        if "file" not in request.FILES:
+            return Response(
+                {"detail": "Aucun fichier envoyé. Utilisez le champ 'file'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uploaded = request.FILES["file"]
+        name = get_valid_filename(uploaded.name or "image")
+        allowed = (
+            "image/jpeg",
+            "image/png",
+            "image/gif",
+            "image/webp",
+        )
+        if uploaded.content_type not in allowed:
+            return Response(
+                {"detail": "Type de fichier non autorisé. Utilisez JPEG, PNG, GIF ou WebP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else "jpg"
+        if ext not in ("jpeg", "jpg", "png", "gif", "webp"):
+            ext = "jpg"
+        path = timezone.now().strftime("communications/inlines/%Y/%m/") + f"{uuid.uuid4().hex}.{ext}"
+        saved_name = default_storage.save(path, uploaded)
+        return Response({"url": saved_name})
+
+    @action(detail=True, methods=["post"], url_path="add-attachment")
+    def add_attachment(self, request, pk=None):
+        """
+        Ajoute une pièce jointe (document ou image) à une publication.
+        POST avec 'file' (obligatoire) et optionnellement 'description'.
+        """
+        post = self.get_object()
+        if "file" not in request.FILES:
+            return Response(
+                {"detail": "Aucun fichier envoyé. Utilisez le champ 'file'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uploaded = request.FILES["file"]
+        description = request.data.get("description") or request.POST.get("description") or ""
+        piece = CommunicationPieceJointe.objects.create(
+            communication=post,
+            fichier=uploaded,
+            description=description,
+            uploaded_by=request.user,
+        )
+        from .serializers import CommunicationPieceJointeSerializer
+        return Response(
+            CommunicationPieceJointeSerializer(piece).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CommunicationPostEditPermission(BasePermission):
+    """Crud (create/update/delete) réservé au pôle Communication et aux admins."""
+
+    def has_permission(self, request, view):
+        return _is_communication_pole_member(request.user)
+
+    def has_object_permission(self, request, view, obj):
+        return _is_communication_pole_member(request.user)
 
 
 class DocumentSyndicalViewSet(BaseModelViewSet):

@@ -12,6 +12,7 @@ from .models import (
     HistoriqueAction,
     InteractionRH,
     MaquetteCompteRendu,
+    NotationEntreprise,
     Notification,
     PieceJointe,
     Pole,
@@ -29,6 +30,14 @@ from .models import (
 class EntrepriseAdmin(admin.ModelAdmin):
     search_fields = ["nom", "secteur_activite"]
     list_display = ["nom", "code", "secteur_activite"]
+
+
+@admin.register(NotationEntreprise)
+class NotationEntrepriseAdmin(admin.ModelAdmin):
+    list_display = ["entreprise", "critere", "note", "created_by", "updated_at"]
+    list_filter = ["critere", "entreprise"]
+    search_fields = ["entreprise__nom", "commentaire"]
+    autocomplete_fields = ["entreprise", "created_by"]
 
 
 @admin.register(Pole)

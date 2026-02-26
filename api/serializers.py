@@ -9,12 +9,16 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from requetes.models import (
     ActiviteRequete,
+    CommunicationPieceJointe,
+    CommunicationPost,
+    CritereNotation,
     DelegueSyndical,
     Dossier,
     Entreprise,
     HistoriqueAction,
     DocumentSyndical,
     MaquetteCompteRendu,
+    NotationEntreprise,
     Notification,
     Pole,
     PoleMembre,
@@ -36,6 +40,47 @@ class EntrepriseSerializer(serializers.ModelSerializer):
         model = Entreprise
         fields = ["id", "nom", "code", "adresse", "secteur_activite"]
         read_only_fields = ["id"]
+
+
+class NotationEntrepriseSerializer(serializers.ModelSerializer):
+    """Serializer pour la notation d'une entreprise (un critère, une note)."""
+
+    entreprise = EntrepriseSerializer(read_only=True)
+    entreprise_id = serializers.PrimaryKeyRelatedField(
+        queryset=Entreprise.objects.all(), write_only=True
+    )
+    critere_display = serializers.CharField(source="get_critere_display", read_only=True)
+    created_by_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NotationEntreprise
+        fields = [
+            "id",
+            "entreprise",
+            "entreprise_id",
+            "critere",
+            "critere_display",
+            "note",
+            "commentaire",
+            "created_by",
+            "created_by_display",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "updated_at"]
+
+    def get_created_by_display(self, obj):
+        user = getattr(obj, "created_by", None)
+        if not user:
+            return None
+        profil = getattr(user, "profil", None)
+        if profil and (getattr(profil, "prenom", "") or getattr(profil, "nom", "")):
+            return f"{getattr(profil, 'prenom', '') or ''} {getattr(profil, 'nom', '') or ''}".strip()
+        return getattr(user, "username", "") or str(user.pk)
+
+    def create(self, validated_data):
+        validated_data["entreprise"] = validated_data.pop("entreprise_id")
+        validated_data["created_by"] = self.context["request"].user
+        return super().create(validated_data)
 
 
 class PoleSerializer(serializers.ModelSerializer):
@@ -806,6 +851,51 @@ class DocumentSyndicalSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at", "uploaded_by", "pole"]
+
+
+class CommunicationPieceJointeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CommunicationPieceJointe
+        fields = ["id", "fichier", "description", "uploaded_by", "uploaded_at"]
+        read_only_fields = ["id", "uploaded_by", "uploaded_at"]
+
+
+class CommunicationPostSerializer(serializers.ModelSerializer):
+    """Serializer pour les publications de communication syndicale."""
+
+    auteur_username = serializers.CharField(source="auteur.username", read_only=True)
+    auteur_first_name = serializers.CharField(source="auteur.first_name", read_only=True)
+    auteur_last_name = serializers.CharField(source="auteur.last_name", read_only=True)
+    entreprise_cible_nom = serializers.CharField(
+        source="entreprise_cible.nom", read_only=True, allow_null=True
+    )
+    pole_cible_nom = serializers.CharField(source="pole_cible.nom", read_only=True, allow_null=True)
+    pieces_jointes = CommunicationPieceJointeSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CommunicationPost
+        fields = [
+            "id",
+            "titre",
+            "contenu",
+            "visibilite",
+            "entreprise_cible",
+            "entreprise_cible_nom",
+            "pole_cible",
+            "pole_cible_nom",
+            "auteur",
+            "auteur_username",
+            "auteur_first_name",
+            "auteur_last_name",
+            "pieces_jointes",
+            "created_at",
+        ]
+        read_only_fields = ["id", "auteur", "created_at"]
+
+    def validate_visibilite(self, value):
+        if value not in ("global", "company", "pole"):
+            raise serializers.ValidationError("Visibilité invalide.")
+        return value
 
 
 class RegisterSerializer(serializers.Serializer):
