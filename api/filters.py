@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import django_filters
 
-from requetes.models import Dossier, MaquetteCompteRendu, Notification, PieceJointe, Requete, Reunion
+from requetes.models import Dossier, MaquetteCompteRendu, Notification, PieceJointe, Requete, Reunion, ActiviteTemplate
+
+
+class ActiviteTemplateFilter(django_filters.FilterSet):
+    created_after = django_filters.DateFilter(field_name="created_at", lookup_expr="gte", label="Créé après")
+    created_before = django_filters.DateFilter(field_name="created_at", lookup_expr="lte", label="Créé avant")
+
+    class Meta:
+        model = ActiviteTemplate
+        fields = ["is_active", "created_after", "created_before"]
 
 
 class RequeteFilter(django_filters.FilterSet):

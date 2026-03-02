@@ -159,7 +159,7 @@ class RequeteAccessPermission(BasePermission):
         # Le demandeur (travailleur) a toujours accès à sa requête (lecture + mise à jour statut, etc.)
         if getattr(obj, "travailleur_id", None) == request.user.pk:
             return True
-        if role == "admin":
+        if role in ("admin", "super_admin"):
             return True
         pole = getattr(obj, "pole", None)
         if pole is not None and _is_pole_member(request.user, pole):
@@ -167,7 +167,10 @@ class RequeteAccessPermission(BasePermission):
         if pole is not None and pole.id in _pole_ids_for_user(request.user):
             return True
         if pole is not None and role in ["pole_manager", "head", "assistant"]:
-            return pole.membres.filter(id=request.user.id).exists() or pole.chef_de_pole_id == request.user.id
+            if pole.membres.filter(id=request.user.id).exists() or pole.chef_de_pole_id == request.user.id:
+                return True
+            if pole.id in _pole_ids_for_user(request.user):
+                return True
         if role == "delegate":
             if obj.delegue_syndical and obj.delegue_syndical.user_id == request.user.id:
                 return True
@@ -179,6 +182,9 @@ class RequeteAccessPermission(BasePermission):
             return False
         if role == "member":
             return False  # déjà traité par le check travailleur_id ci-dessus
+        # Alignement avec get_queryset : si l'objet serait visible (même pôle), autoriser
+        if pole is not None and pole.id in _pole_ids_for_user(request.user):
+            return True
         return False
 
 

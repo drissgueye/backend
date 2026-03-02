@@ -60,6 +60,7 @@ class StatutRequete(models.TextChoices):
     HR_ESCALATED = "hr_escalated", "Escaladé RH"
     HR_PENDING = "hr_pending", "En attente RH"
     RESOLVED = "resolved", "Résolu"
+    NON_RESOLU = "non_resolu", "Non résolu"
     CLOSED = "closed", "Clôturé"
 
 
@@ -160,15 +161,24 @@ def activite_compte_rendu_upload_to(instance: "ActiviteRequete", filename: str) 
 
 
 class CritereNotation(models.TextChoices):
-    """Critères de notation des entreprises (employeurs)."""
+    """
+    Critères d'évaluation des entreprises (employeurs).
+    Alignés sur les critères généraux et la Convention collective des Assurances.
+    """
 
-    DIALOGUE_SOCIAL = "dialogue_social", "Dialogue social"
-    RESPECT_ACCORDS = "respect_accords", "Respect des accords et conformité"
-    CONDITIONS_TRAVAIL = "conditions_travail", "Conditions de travail"
-    REMUNERATION = "remuneration", "Rémunération et avantages"
-    FORMATION = "formation", "Formation et évolution"
-    SANTE_SECURITE = "sante_securite", "Santé et sécurité au travail"
-    RELATION_SYNDICAT = "relation_syndicat", "Relation avec le syndicat"
+    # 1. Critères d'évaluation des entreprises
+    CONFORMITE_CONTRATS = "conformite_contrats", "Conformité des contrats"
+    REMUNERATION_AVANTAGES = "remuneration_avantages", "Rémunération et avantages"
+    SECURITE_SANTE = "securite_sante", "Sécurité et santé"
+    RELATIONS_SOCIALES = "relations_sociales", "Relations sociales"
+    RUPTURE_CONTRAT = "rupture_contrat", "Rupture du contrat"
+    RUPTURE_COMMUNICATION = "rupture_communication", "Rupture de communication"
+    # 2. Convention collective des Assurances
+    CLASSIFICATION_PROFESSIONNELLE = "classification_professionnelle", "Classification professionnelle"
+    PRIMES_SPECIFIQUES = "primes_specifiques", "Primes spécifiques"
+    CONDITIONS_TRAVAIL_CCA = "conditions_travail_cca", "Conditions de travail (CCA)"
+    FORMATION = "formation", "Formation"
+    TRAITEMENT_EQUITABLE = "traitement_equitable", "Traitement équitable"
 
 
 class Entreprise(models.Model):
@@ -343,7 +353,7 @@ class Dossier(models.Model):
         if not requetes.exists():
             return False
         return not requetes.exclude(
-            statut__in=[StatutRequete.RESOLVED, StatutRequete.CLOSED]
+            statut__in=[StatutRequete.RESOLVED, StatutRequete.NON_RESOLU, StatutRequete.CLOSED]
         ).exists()
 
     def generer_synthese(self) -> str:
@@ -746,11 +756,152 @@ class StatutActiviteRequete(models.TextChoices):
     CANCELLED = "cancelled", "Annulé"
 
 
+class TypeChampActivite(models.TextChoices):
+    """Types de champs personnalisés pour les activités dynamiques."""
+
+    TEXT = "text", "Texte"
+    TEXTAREA = "textarea", "Zone de texte"
+    NUMBER = "number", "Nombre"
+    DATE = "date", "Date"
+    DATETIME = "datetime", "Date et heure"
+    BOOLEAN = "boolean", "Oui/Non"
+    FILE = "file", "Fichier"
+    CHOICE = "choice", "Liste de choix"
+
+
+class ActiviteTemplate(models.Model):
+    """
+    Modèle d'activité dynamique créé par l'administrateur.
+    Définit le nom et les champs personnalisés. Affectation aux pôles via ActiviteTemplatePole.
+    Suppression en douceur via is_active=False pour ne pas impacter les ActiviteRequete existantes.
+    """
+
+    nom = models.CharField(max_length=200)
+    code = models.SlugField(
+        max_length=80,
+        unique=True,
+        db_index=True,
+        help_text="Identifiant unique (ex: evaluation_grille, suivi_primes).",
+    )
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Désactiver au lieu de supprimer pour préserver l'historique.",
+    )
+    ordre = models.PositiveSmallIntegerField(default=0)
+    poles = models.ManyToManyField(
+        Pole,
+        through="ActiviteTemplatePole",
+        related_name="activite_templates",
+        blank=True,
+        help_text="Pôles pour lesquels cette activité est disponible dans le workflow.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Modèle d'activité"
+        verbose_name_plural = "Modèles d'activité"
+        ordering = ["ordre", "nom"]
+
+    def __str__(self) -> str:
+        return self.nom
+
+
+class ChampActiviteTemplate(models.Model):
+    """Champ personnalisé d'un modèle d'activité (texte, nombre, date, fichier, etc.)."""
+
+    activite_template = models.ForeignKey(
+        ActiviteTemplate,
+        on_delete=models.CASCADE,
+        related_name="champs",
+        db_index=True,
+    )
+    nom = models.SlugField(
+        max_length=80,
+        help_text="Clé du champ (ex: date_limite, type_prime).",
+    )
+    label = models.CharField(max_length=200)
+    type_champ = models.CharField(
+        max_length=20,
+        choices=TypeChampActivite.choices,
+        db_index=True,
+    )
+    required = models.BooleanField(default=False)
+    ordre = models.PositiveSmallIntegerField(default=0)
+    options = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Pour type=choice : liste de valeurs [{\"value\": \"x\", \"label\": \"Libellé\"}].",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Désactiver un champ sans le supprimer pour ne pas casser l'historique.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Champ de modèle d'activité"
+        verbose_name_plural = "Champs de modèles d'activité"
+        ordering = ["activite_template", "ordre", "nom"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["activite_template", "nom"],
+                name="unique_activite_template_champ_nom",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.activite_template.nom} — {self.label}"
+
+
+class ActiviteTemplatePole(models.Model):
+    """Affectation d'un modèle d'activité à un pôle (M2M avec ordre)."""
+
+    activite_template = models.ForeignKey(
+        ActiviteTemplate,
+        on_delete=models.CASCADE,
+        related_name="affectations_poles",
+        db_index=True,
+    )
+    pole = models.ForeignKey(
+        Pole,
+        on_delete=models.CASCADE,
+        related_name="affectations_activites",
+        db_index=True,
+    )
+    ordre = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        verbose_name = "Affectation activité → pôle"
+        verbose_name_plural = "Affectations activité → pôle"
+        ordering = ["pole", "ordre", "activite_template"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["activite_template", "pole"],
+                name="unique_activite_template_pole",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.activite_template.nom} → {self.pole.nom}"
+
+
 class ActiviteRequete(models.Model):
     """Activité planifiée sur une requête (date choisie dans le suivi d'activités). Affichee dans le calendrier."""
 
     requete = models.ForeignKey(
         Requete, on_delete=models.CASCADE, related_name="activites", db_index=True
+    )
+    activite_template = models.ForeignKey(
+        ActiviteTemplate,
+        on_delete=models.PROTECT,
+        related_name="activites_requetes",
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Si renseigné, type_activite et champs personnalisés viennent de ce modèle.",
     )
     type_activite = models.CharField(max_length=50)
     titre = models.CharField(max_length=255)
@@ -785,7 +936,9 @@ class ActiviteRequete(models.Model):
         indexes = [models.Index(fields=["requete", "date_planifiee"])]
 
     def get_type_activite_display(self) -> str:
-        """Libellé du type d'activité selon le pôle (activity_types_by_pole)."""
+        """Libellé du type d'activité : priorité au modèle dynamique, sinon activity_types_by_pole."""
+        if self.activite_template_id:
+            return self.activite_template.nom
         from requetes.activity_types_by_pole import (
             get_activity_types_for_pole,
             get_pole_activity_code,

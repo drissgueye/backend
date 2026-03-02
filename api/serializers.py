@@ -9,6 +9,10 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from requetes.models import (
     ActiviteRequete,
+    ActiviteTemplate,
+    ChampActiviteTemplate,
+    ActiviteTemplatePole,
+    TypeChampActivite,
     CommunicationPieceJointe,
     CommunicationPost,
     CritereNotation,
@@ -695,6 +699,218 @@ class ReunionSerializer(serializers.ModelSerializer):
         return attrs
 
 
+# ----- Activités dynamiques (modèles et champs personnalisés) -----
+
+
+class ChampActiviteTemplateSerializer(serializers.ModelSerializer):
+    """Champ personnalisé d'un modèle d'activité."""
+
+    type_champ_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChampActiviteTemplate
+        fields = [
+            "id",
+            "nom",
+            "label",
+            "type_champ",
+            "type_champ_display",
+            "required",
+            "ordre",
+            "options",
+            "is_active",
+        ]
+        read_only_fields = ["id"]
+
+    def get_type_champ_display(self, obj):
+        try:
+            return obj.get_type_champ_display() or str(obj.type_champ or "")
+        except Exception:
+            return str(getattr(obj, "type_champ", "") or "")
+
+    def validate_type_champ(self, value):
+        if value not in [c[0] for c in TypeChampActivite.choices]:
+            raise serializers.ValidationError(
+                f"Type invalide. Valeurs attendues : {[c[0] for c in TypeChampActivite.choices]}"
+            )
+        return value
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            self._current_type_champ = data.get("type_champ")
+        else:
+            self._current_type_champ = None
+        return super().to_internal_value(data)
+
+    def validate_options(self, value):
+        type_champ = (
+            getattr(self, "_current_type_champ", None)
+            or (getattr(self.instance, "type_champ", None) if self.instance else None)
+        )
+        if type_champ == TypeChampActivite.CHOICE:
+            if not value or not isinstance(value, list):
+                raise serializers.ValidationError(
+                    "Pour le type « Liste de choix », options doit être une liste non vide."
+                )
+            for i, opt in enumerate(value):
+                if not isinstance(opt, dict) or "value" not in opt:
+                    raise serializers.ValidationError(
+                        f"Chaque option doit être un objet avec au moins la clé « value » (option {i})."
+                    )
+        return value or []
+
+
+class ActiviteTemplateSerializer(serializers.ModelSerializer):
+    """Modèle d'activité dynamique avec champs actifs et pôles assignés."""
+
+    champs = serializers.SerializerMethodField()
+    pole_ids = serializers.SerializerMethodField()
+
+    def get_champs(self, obj):
+        """Ne retourne que les champs actifs (pour le workflow et l'affichage)."""
+        qs = obj.champs.filter(is_active=True).order_by("ordre", "nom")
+        out = []
+        for champ in qs:
+            try:
+                out.append(ChampActiviteTemplateSerializer(champ).data)
+            except Exception:
+                continue
+        return out
+
+    class Meta:
+        model = ActiviteTemplate
+        fields = [
+            "id",
+            "nom",
+            "code",
+            "description",
+            "is_active",
+            "ordre",
+            "champs",
+            "pole_ids",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_pole_ids(self, obj):
+        try:
+            return list(obj.poles.values_list("id", flat=True))
+        except Exception:
+            return []
+
+
+class ActiviteTemplateListSerializer(serializers.ModelSerializer):
+    """Liste légère des modèles d'activité (sans champs détaillés)."""
+
+    pole_ids = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ActiviteTemplate
+        fields = ["id", "nom", "code", "is_active", "ordre", "pole_ids", "created_at"]
+
+    def get_pole_ids(self, obj):
+        try:
+            return list(obj.poles.values_list("id", flat=True))
+        except Exception:
+            return []
+
+
+class ChampActiviteTemplateWriteSerializer(ChampActiviteTemplateSerializer):
+    """Variant pour écriture : accepte id (optionnel) pour mise à jour des champs existants."""
+
+    id = serializers.IntegerField(required=False, allow_null=True)
+
+    class Meta(ChampActiviteTemplateSerializer.Meta):
+        read_only_fields = []
+
+
+class ActiviteTemplateWriteSerializer(serializers.ModelSerializer):
+    """
+    Création / mise à jour d'un modèle d'activité avec champs et affectations pôles.
+    Accepte champs (liste de définitions) et pole_ids (liste d'ids).
+    """
+
+    champs = ChampActiviteTemplateWriteSerializer(many=True, required=False)
+    pole_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+
+    class Meta:
+        model = ActiviteTemplate
+        fields = [
+            "id",
+            "nom",
+            "code",
+            "description",
+            "is_active",
+            "ordre",
+            "champs",
+            "pole_ids",
+        ]
+        read_only_fields = ["id"]
+
+    def _update_champs(self, instance, champs_data):
+        """Met à jour les champs : crée, met à jour ou désactive (ne supprime pas)."""
+        seen_ids = set()
+        for i, data in enumerate(champs_data):
+            data = dict(data)
+            champ_id = data.pop("id", None)
+            out = self._champ_valid_data(data)
+            out["ordre"] = out.get("ordre", i)
+            if champ_id and ChampActiviteTemplate.objects.filter(
+                activite_template=instance, pk=champ_id
+            ).exists():
+                ChampActiviteTemplate.objects.filter(pk=champ_id).update(**out)
+                seen_ids.add(champ_id)
+            else:
+                out["activite_template"] = instance
+                obj = ChampActiviteTemplate.objects.create(**out)
+                seen_ids.add(obj.pk)
+        # Désactiver les champs retirés du payload (soft)
+        instance.champs.exclude(pk__in=seen_ids).update(is_active=False)
+
+    def _champ_valid_data(self, data, instance=None):
+        allowed = {"nom", "label", "type_champ", "required", "ordre", "options", "is_active"}
+        out = {k: v for k, v in dict(data).items() if k in allowed}
+        if "ordre" not in out:
+            out["ordre"] = 0
+        return out
+
+    def create(self, validated_data):
+        champs_data = validated_data.pop("champs", [])
+        pole_ids = validated_data.pop("pole_ids", [])
+        instance = ActiviteTemplate.objects.create(**validated_data)
+        for i, data in enumerate(champs_data):
+            out = self._champ_valid_data(data)
+            out["ordre"] = out.get("ordre", i)
+            ChampActiviteTemplate.objects.create(activite_template=instance, **out)
+        if pole_ids:
+            instance.poles.set(
+                Pole.objects.filter(pk__in=pole_ids),
+                through_defaults={"ordre": 0},
+            )
+        return instance
+
+    def update(self, instance, validated_data):
+        champs_data = validated_data.pop("champs", None)
+        pole_ids = validated_data.pop("pole_ids", None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if champs_data is not None:
+            self._update_champs(instance, champs_data)
+        if pole_ids is not None:
+            instance.poles.set(
+                Pole.objects.filter(pk__in=pole_ids),
+                through_defaults={"ordre": 0},
+            )
+        return instance
+
+
 class ActiviteRequeteSerializer(serializers.ModelSerializer):
     """Serializer pour les activités planifiées sur une requête (suivi d'activités, calendrier)."""
 
@@ -702,6 +918,14 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
         source="requete", queryset=Requete.objects.all(), write_only=True
     )
     requete = serializers.StringRelatedField(read_only=True)
+    activite_template_id = serializers.PrimaryKeyRelatedField(
+        source="activite_template",
+        queryset=ActiviteTemplate.objects.filter(is_active=True),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
+    activite_template = ActiviteTemplateListSerializer(read_only=True)
     created_by_id = serializers.PrimaryKeyRelatedField(
         source="created_by", queryset=User.objects.all(), write_only=True, required=False
     )
@@ -714,6 +938,8 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
             "id",
             "requete",
             "requete_id",
+            "activite_template",
+            "activite_template_id",
             "type_activite",
             "type_activite_display",
             "titre",
@@ -731,6 +957,7 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "type_activite_display"]
         extra_kwargs = {
             "piece_jointe_compte_rendu": {"use_url": False},
+            "type_activite": {"required": False},
         }
 
     def get_type_activite_display(self, obj):
@@ -743,10 +970,23 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
             is_valid_activity_type_for_pole,
         )
         requete = self.context.get("requete") or (self.instance.requete if self.instance else None)
+        activite_template = attrs.get("activite_template")
         type_activite = attrs.get("type_activite")
         if type_activite is None and self.instance:
             type_activite = self.instance.type_activite
-        if requete and type_activite is not None:
+        if activite_template is None and self.instance:
+            activite_template = getattr(self.instance, "activite_template", None)
+
+        if requete and activite_template:
+            pole = getattr(requete, "pole", None)
+            # Modèle sans pôle assigné (pole_ids vides) = utilisable pour toute requête
+            template_has_poles = activite_template.poles.exists()
+            if template_has_poles and (not pole or not activite_template.poles.filter(pk=pole.pk).exists()):
+                raise serializers.ValidationError({
+                    "activite_template_id": "Ce modèle d'activité n'est pas assigné au pôle de la requête."
+                })
+            attrs["type_activite"] = activite_template.code
+        elif requete and type_activite is not None:
             pole = getattr(requete, "pole", None)
             pole_code = get_pole_activity_code(pole) if pole else "generic"
             if not is_valid_activity_type_for_pole(pole_code, type_activite):
@@ -757,9 +997,17 @@ class ActiviteRequeteSerializer(serializers.ModelSerializer):
                         f"Type d'activité non autorisé pour ce pôle. Valeurs attendues : {allowed_values}"
                     ]
                 })
+
         extra_data = attrs.get("extra_data")
         if extra_data is not None and not isinstance(extra_data, dict):
             raise serializers.ValidationError({"extra_data": "Doit être un objet (clé-valeur)."})
+        # Validation des champs personnalisés lorsque l'activité est liée à un template
+        activite_template = attrs.get("activite_template") or (
+            getattr(self.instance, "activite_template", None) if self.instance else None
+        )
+        if activite_template and extra_data is not None:
+            from requetes.activite_validation import validate_extra_data_for_template
+            validate_extra_data_for_template(extra_data, activite_template)
         return attrs
 
 

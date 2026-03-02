@@ -47,6 +47,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 
 from pathlib import Path
+from datetime import timedelta
 
 
 
@@ -576,11 +577,11 @@ REST_FRAMEWORK = {
 
 }
 
-
-
-
-
-
+# Durée de vie des tokens JWT (évite les déconnexions intempestives)
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),   # 1 h au lieu de 5 min
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),  # 7 jours au lieu de 1
+}
 
 SPECTACULAR_SETTINGS = {
 

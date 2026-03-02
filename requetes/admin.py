@@ -3,6 +3,9 @@ from __future__ import annotations
 from django.contrib import admin
 
 from .models import (
+    ActiviteTemplate,
+    ActiviteTemplatePole,
+    ChampActiviteTemplate,
     Dossier,
     DocumentSyndical,
     DelegueSyndical,
@@ -255,3 +258,35 @@ class MaquetteCompteRenduAdmin(admin.ModelAdmin):
     list_filter = ["is_default"]
     ordering = ["ordre", "nom"]
     search_fields = ["nom"]
+
+
+# ---------- Modèles d'activité dynamiques ----------
+
+class ChampActiviteTemplateInline(admin.TabularInline):
+    model = ChampActiviteTemplate
+    extra = 0
+    ordering = ["ordre", "nom"]
+
+
+class ActiviteTemplatePoleInline(admin.TabularInline):
+    model = ActiviteTemplatePole
+    extra = 0
+    autocomplete_fields = ["pole"]
+
+
+@admin.register(ActiviteTemplate)
+class ActiviteTemplateAdmin(admin.ModelAdmin):
+    list_display = ["nom", "code", "is_active", "ordre", "created_at"]
+    list_filter = ["is_active"]
+    search_fields = ["nom", "code", "description"]
+    ordering = ["ordre", "nom"]
+    inlines = [ChampActiviteTemplateInline, ActiviteTemplatePoleInline]
+
+
+@admin.register(ActiviteTemplatePole)
+class ActiviteTemplatePoleAdmin(admin.ModelAdmin):
+    list_display = ["activite_template", "pole", "ordre"]
+    list_filter = ["pole"]
+    search_fields = ["activite_template__nom", "pole__nom"]
+    autocomplete_fields = ["activite_template", "pole"]
+    ordering = ["pole", "ordre", "activite_template"]

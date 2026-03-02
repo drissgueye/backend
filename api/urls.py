@@ -5,6 +5,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
+    ActiviteTemplateViewSet,
     CommunicationPostViewSet,
     DelegueSyndicalViewSet,
     DossierViewSet,
@@ -38,6 +39,7 @@ router.register("communications", CommunicationPostViewSet, basename="communicat
 router.register("documents", DocumentSyndicalViewSet, basename="document")
 router.register("requetes", RequeteViewSet, basename="requete")
 router.register("maquettes-compte-rendu", MaquetteCompteRenduViewSet, basename="maquette-compte-rendu")
+router.register("activite-templates", ActiviteTemplateViewSet, basename="activite-template")
 router.register("dossiers", DossierViewSet, basename="dossier")
 router.register("pieces-jointes", PieceJointeViewSet, basename="piece-jointe")
 router.register("reunions", ReunionViewSet, basename="reunion")

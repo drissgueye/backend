@@ -27,6 +27,7 @@ from django.utils.text import get_valid_filename
 from requetes.models import (
     ActionHistorique,
     ActiviteRequete,
+    ActiviteTemplate,
     CommunicationPieceJointe,
     CommunicationPost,
     Dossier,
@@ -47,6 +48,7 @@ from requetes.models import (
     Reunion,
     TypeProbleme,
 )
+from requetes.services.notation_auto import get_notation_automatique
 from requetes.activity_types_by_pole import (
     get_activity_types_for_pole,
     get_pole_activity_code,
@@ -65,6 +67,7 @@ from .filters import (
     PieceJointeFilter,
     RequeteFilter,
     ReunionFilter,
+    ActiviteTemplateFilter,
 )
 from .permissions import (
     DossierAccessPermission,
@@ -79,6 +82,9 @@ from .permissions import (
 )
 from .serializers import (
     ActiviteRequeteSerializer,
+    ActiviteTemplateSerializer,
+    ActiviteTemplateListSerializer,
+    ActiviteTemplateWriteSerializer,
     AdminUserCreateSerializer,
     CommunicationPostSerializer,
     DossierSerializer,
@@ -229,6 +235,13 @@ class EntrepriseViewSet(BaseModelViewSet):
             return [AllowAny()]
         return super().get_permissions()
 
+    @action(detail=True, methods=["get"], url_path="notation-automatique")
+    def notation_automatique(self, request, pk=None):
+        """Retourne la notation automatique (1-5) par critère, calculée à partir des requêtes clôturées (résolu / non résolu)."""
+        entreprise = self.get_object()
+        notes = get_notation_automatique(entreprise.id)
+        return Response(notes, status=status.HTTP_200_OK)
+
 
 class NotationEntrepriseViewSet(viewsets.ModelViewSet):
     """Notations des entreprises par critères. Liste filtrable par entreprise ; création = upsert (user + entreprise + critère)."""
@@ -333,6 +346,21 @@ class PoleViewSet(BaseModelViewSet):
                 profil.role = new_role
                 profil.save(update_fields=["role"])
         return Response(PoleMembreSerializer(member).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"], url_path="activites-disponibles")
+    def activites_disponibles(self, request, pk=None):
+        """
+        Liste les modèles d'activité assignés à ce pôle (workflow).
+        À utiliser côté front pour n'afficher que les activités disponibles lors du traitement d'une requête.
+        """
+        pole = self.get_object()
+        qs = (
+            ActiviteTemplate.objects.filter(is_active=True, poles=pole)
+            .prefetch_related("champs")
+            .order_by("ordre", "nom")
+        )
+        serializer = ActiviteTemplateSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class PoleMembreViewSet(BaseModelViewSet):
@@ -685,7 +713,7 @@ class RequeteViewSet(BaseModelViewSet):
         ancien_statut = requete.statut
         requete.statut = nouveau_statut
         update_fields = ["statut", "updated_at"]
-        if nouveau_statut == "closed" and not requete.date_cloture:
+        if nouveau_statut in ("resolved", "non_resolu", "closed") and not requete.date_cloture:
             from django.utils import timezone
             requete.date_cloture = timezone.now().date()
             update_fields.append("date_cloture")
@@ -712,12 +740,17 @@ class RequeteViewSet(BaseModelViewSet):
     def pole_actions(self, request, pk=None):
         """Liste des actions proposées par le processeur du pôle de la requête."""
         requete = self.get_object()
+        if not requete.pole_id:
+            return Response(
+                {"actions": [], "allowed_transitions": []},
+                status=status.HTTP_200_OK,
+            )
         try:
             processor = get_pole_processor(requete.pole)
-        except PoleProcessorNotFoundError as e:
+        except PoleProcessorNotFoundError:
             return Response(
-                {"detail": e.message},
-                status=status.HTTP_404_NOT_FOUND,
+                {"actions": [], "allowed_transitions": []},
+                status=status.HTTP_200_OK,
             )
         actions = processor.get_available_actions(requete)
         allowed_transitions = processor.get_allowed_transitions(requete)
@@ -832,6 +865,36 @@ class RequeteViewSet(BaseModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["get", "post"], url_path="activites")
+    @extend_schema(
+        request=ActiviteRequeteSerializer,
+        examples=[
+            OpenApiExample(
+                "Création activité avec modèle dynamique (champs personnalisés)",
+                value={
+                    "requete_id": 42,
+                    "activite_template_id": 1,
+                    "titre": "Éval. grille Q1 2026",
+                    "description": "Point avec la direction.",
+                    "date_planifiee": "2026-03-15T14:00:00Z",
+                    "extra_data": {
+                        "secteur_ou_branche": "Assurance",
+                        "date_limite": "2026-03-31",
+                    },
+                },
+                request_only=True,
+            ),
+            OpenApiExample(
+                "Création activité legacy (sans template)",
+                value={
+                    "requete_id": 42,
+                    "type_activite": "call",
+                    "titre": "Appel travailleur",
+                    "date_planifiee": "2026-02-28T10:00:00Z",
+                },
+                request_only=True,
+            ),
+        ],
+    )
     def activites(self, request, pk=None):
         """Liste les activités planifiées de la requête ou en crée une (date affichée dans le calendrier)."""
         requete = self.get_object()
@@ -871,7 +934,7 @@ class RequeteViewSet(BaseModelViewSet):
         if request.method == "GET":
             serializer = ActiviteRequeteSerializer(activite, context={"request": request})
             return Response(serializer.data)
-        # PATCH / PUT : mise à jour partielle (statut, date_realisation, commentaire, pièce jointe, date_planifiee, titre, description)
+        # PATCH / PUT : mise à jour partielle (statut, date_realisation, commentaire, pièce jointe, champs personnalisés, etc.)
         allowed = {
             "statut",
             "date_realisation",
@@ -880,6 +943,7 @@ class RequeteViewSet(BaseModelViewSet):
             "date_planifiee",
             "titre",
             "description",
+            "extra_data",
         }
         data = {k: v for k, v in request.data.items() if k in allowed}
         if request.FILES and "piece_jointe_compte_rendu" in request.FILES:
@@ -1172,6 +1236,85 @@ class MaquetteCompteRenduViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_class = MaquetteCompteRenduFilter
     ordering = ["ordre", "nom"]
+
+
+class ActiviteTemplateViewSet(viewsets.ModelViewSet):
+    """
+    Modèles d'activité dynamiques (CRUD).
+    Création / modification / suppression (soft) réservées aux administrateurs.
+    Filtre ?pole=<id> : ne retourne que les modèles assignés à ce pôle (pour le workflow).
+    Recherche ?search=<terme> : nom, code, description (icontains).
+    """
+    permission_classes = [IsAuthenticatedAndHasRole]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_class = ActiviteTemplateFilter
+    search_fields = ["nom", "code", "description"]
+    ordering = ["ordre", "nom"]
+
+    @extend_schema(
+        request=ActiviteTemplateWriteSerializer,
+        examples=[
+            OpenApiExample(
+                "Création modèle d'activité avec champs personnalisés",
+                value={
+                    "nom": "Évaluation grille salariale",
+                    "code": "evaluation_grille",
+                    "description": "Suivi des grilles par secteur.",
+                    "is_active": True,
+                    "ordre": 10,
+                    "champs": [
+                        {
+                            "nom": "secteur_ou_branche",
+                            "label": "Secteur / branche",
+                            "type_champ": "text",
+                            "required": False,
+                            "ordre": 0,
+                            "options": [],
+                            "is_active": True,
+                        },
+                        {
+                            "nom": "date_limite",
+                            "label": "Date limite de remise",
+                            "type_champ": "date",
+                            "required": True,
+                            "ordre": 1,
+                            "options": [],
+                            "is_active": True,
+                        },
+                    ],
+                    "pole_ids": [1, 2],
+                },
+                request_only=True,
+            ),
+        ],
+    )
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
+
+    def get_queryset(self):
+        qs = ActiviteTemplate.objects.prefetch_related("champs", "poles").all()
+        pole_id = self.request.query_params.get("pole")
+        if pole_id:
+            qs = qs.filter(poles__id=pole_id)
+        return qs.order_by("ordre", "nom")
+
+    def get_serializer_class(self):
+        if self.action in ("create", "update", "partial_update"):
+            return ActiviteTemplateWriteSerializer
+        if self.action == "list":
+            return ActiviteTemplateListSerializer
+        return ActiviteTemplateSerializer
+
+    def get_permissions(self):
+        perms = list(super().get_permissions())
+        if self.action in ("create", "update", "partial_update", "destroy"):
+            perms.append(IsSuperAdminOrAdmin())
+        return perms
+
+    def perform_destroy(self, instance):
+        """Suppression en douceur : désactivation pour ne pas impacter les ActiviteRequete existantes."""
+        instance.is_active = False
+        instance.save()
 
 
 class ReunionViewSet(BaseModelViewSet):
