@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.http import HttpResponse
 from django.db import transaction, IntegrityError
-from django.db.models import Q
+from django.db.models import Q, Count
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status, viewsets, serializers
 from rest_framework.decorators import action
@@ -161,6 +161,94 @@ class TypeProblemeChoicesView(APIView):
         allowed = set(pole.types_problemes)
         filtered = [c for c in all_choices if c["value"] in allowed]
         return Response(filtered if filtered else all_choices)
+
+
+class ReportsAPIView(APIView):
+    """
+    Statistiques agrégées pour la page Rapports.
+    GET /api/reports/ : retourne les comptages (requêtes par statut, dossiers, etc.)
+    selon les mêmes règles de visibilité que les listes (admin = tout, autres = selon rôle/pôle).
+    """
+
+    permission_classes = [IsAuthenticatedAndHasRole]
+
+    def get(self, request):
+        role = _get_role(request.user)
+        # Requêtes visibles (même logique que RequeteViewSet.get_queryset)
+        qs_requetes = (
+            Requete.objects.select_related("pole", "entreprise", "delegue_syndical", "dossier")
+            .select_related("travailleur", "travailleur__profil")
+            .all()
+        )
+        if role not in ("admin", "super_admin"):
+            if role == "delegate":
+                delegue = DelegueSyndical.objects.filter(user=request.user).first()
+                if delegue and delegue.entreprise_id:
+                    qs_requetes = qs_requetes.filter(
+                        Q(travailleur=request.user)
+                        | Q(travailleur__profil__entreprise_id=delegue.entreprise_id)
+                    )
+                else:
+                    qs_requetes = qs_requetes.filter(travailleur=request.user)
+            elif role == "member":
+                qs_requetes = qs_requetes.filter(travailleur=request.user)
+            else:
+                pole_ids = _user_pole_ids(request.user)
+                if pole_ids:
+                    qs_requetes = qs_requetes.filter(
+                        Q(pole_id__in=pole_ids) | Q(travailleur=request.user)
+                    )
+                else:
+                    qs_requetes = qs_requetes.filter(travailleur=request.user)
+
+        # Dossiers visibles (même logique que DossierViewSet.get_queryset)
+        qs_dossiers = (
+            Dossier.objects.select_related("pole", "responsable")
+            .prefetch_related("requetes")
+            .all()
+        )
+        if role != "admin":
+            if role == "delegate":
+                delegue = DelegueSyndical.objects.filter(user=request.user).first()
+                if delegue and delegue.entreprise_id:
+                    qs_dossiers = qs_dossiers.filter(
+                        requetes__travailleur__profil__entreprise_id=delegue.entreprise_id
+                    ).distinct()
+                else:
+                    qs_dossiers = qs_dossiers.none()
+            elif role == "member":
+                qs_dossiers = qs_dossiers.filter(requetes__travailleur=request.user).distinct()
+            else:
+                pole_ids = _user_pole_ids(request.user)
+                if pole_ids:
+                    qs_dossiers = qs_dossiers.filter(
+                        Q(pole_id__in=pole_ids) | Q(requetes__travailleur=request.user)
+                    ).distinct()
+                else:
+                    qs_dossiers = qs_dossiers.filter(
+                        requetes__travailleur=request.user
+                    ).distinct()
+
+        requetes_par_statut = dict(
+            qs_requetes.values("statut").annotate(count=Count("id")).values_list("statut", "count")
+        )
+        dossiers_par_statut = dict(
+            qs_dossiers.values("statut").annotate(count=Count("id")).values_list("statut", "count")
+        )
+
+        data = {
+            "requetes": {
+                "total": qs_requetes.count(),
+                "par_statut": requetes_par_statut,
+            },
+            "dossiers": {
+                "total": qs_dossiers.count(),
+                "par_statut": dossiers_par_statut,
+            },
+            "entreprises_total": Entreprise.objects.count(),
+            "notations_total": NotationEntreprise.objects.count(),
+        }
+        return Response(data, status=status.HTTP_200_OK)
 
 
 def _entreprise_id_for_user(user: Any) -> int | None:

@@ -21,6 +21,7 @@ from .views import (
     PoleViewSet,
     ProfilUtilisateurViewSet,
     RegisterAPIView,
+    ReportsAPIView,
     CustomTokenObtainPairView,
     RequeteViewSet,
     ReunionViewSet,
@@ -51,6 +52,7 @@ urlpatterns = [
     path("auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/register/", RegisterAPIView.as_view(), name="register"),
     path("type-probleme-choices/", TypeProblemeChoicesView.as_view(), name="type-probleme-choices"),
+    path("reports/", ReportsAPIView.as_view(), name="reports"),
     path("gestion-documents/", include("documents.urls")),
     path("", include(router.urls)),
 ]
